@@ -1,0 +1,12 @@
+# eBPF 생성물
+vmlinux.h
+*.skel.h
+*.o
+
+# 빌드 바이너리
+src/myc_loader
+src/mycontainer_run
+
+# 로컬 전용 설정
+.claude/settings.local.json
+CLAUDE.local.md

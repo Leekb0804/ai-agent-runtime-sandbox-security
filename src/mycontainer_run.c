@@ -424,7 +424,7 @@ int main(int argc, char *argv[]) {
     __u64 cgroup_id = st.st_ino;
 
     // 흠... 모든 컨테이너에 ebpf를 붙일거면 fd가 실패했을때 에러출력하고 종료되는게 맞는것 같은데 / 그게 아니라면 그냥 진행하고?
-    int bpf_fd = bpf_obj_get("/sys/fs/bpf/watched_cgroups");
+    int bpf_fd = bpf_obj_get("/sys/fs/bpf/session_cgroups");
     if (bpf_fd >= 0) {
         __u8 dummy = 1;
         int bpf_update_result =  bpf_map_update_elem(bpf_fd, &cgroup_id, &dummy, BPF_ANY);

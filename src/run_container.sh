@@ -13,8 +13,15 @@ PIDS="max"
 ROOTFS_PATH="/home/dev/practice/mycontainer/busybox_rootfs"   # 이번엔 lowerdir(이미지 레이어)로 사용됨
 CONTAINER_DIR="/var/lib/mycontainer/containers/mycontainer-$$"  # upper/work/merged를 담을 디렉토리
 CMD=()
+MODE="run"
+SESSION_ID=""
+SESSION_DIR=""
+
 
 if [[ "$1" == "run" ]]; then
+    shift
+elif [[ "$1" == "agent-run" ]]; then
+    MODE="agent"
     shift
 fi
 
@@ -46,6 +53,19 @@ CGROUP_NAME="mycontainer-$$"
 CGROUP_PATH="/sys/fs/cgroup/$CGROUP_NAME"
 
 sudo mkdir "$CGROUP_PATH"
+if [[ "$MODE" == "agent" ]]; then
+    SESSION_ID="$(date +%Y%m%d-%H%M%S)-$$"
+    SESSION_DIR="/var/lib/mycontainer/sessions/$SESSION_ID"
+    sudo mkdir -p "$SESSION_DIR"
+
+    CGROUP_ID=$(stat -c %i "$CGROUP_PATH")
+    jq -n --arg sid "$SESSION_ID" --argjson cid "$CGROUP_ID" \
+            --arg start "$(date -Is)" --arg cmd "${CMD[*]}" \
+            '{session_id:$sid, cgroup_id:$cid, started_at:$start, command:$cmd}' \
+        | sudo tee "$SESSION_DIR/meta.json" > /dev/null
+    echo "[*] 세션 시작: $SESSION_ID (cgroup_id=$CGROUP_ID)"
+fi
+
 echo "$MEMORY" | sudo tee "$CGROUP_PATH/memory.max" > /dev/null
 echo "$CPU_MAX_VALUE" | sudo tee "$CGROUP_PATH/cpu.max" > /dev/null
 echo "$PIDS" | sudo tee "$CGROUP_PATH/pids.max" > /dev/null
@@ -86,6 +106,19 @@ sudo mkdir -p "$(dirname "$CONTAINER_DIR")"
 
 # --- 여기만 기존 pivot_root_container에서 mycontainer_run으로 교체 ---
 # 인자 순서: <lowerdir> <컨테이너 작업디렉토리> <cgroup 경로> <netns 이름> <실행할 프로그램...>
-./mycontainer_run "$ROOTFS_PATH" "$CONTAINER_DIR" "$CGROUP_PATH" "$NETNS_NAME" "${CMD[@]}" || true
+set +e
+./mycontainer_run "$ROOTFS_PATH" "$CONTAINER_DIR" "$CGROUP_PATH" "$NETNS_NAME" "${CMD[@]}"
+RC=$?
+set -e
+
 sudo rmdir "$CGROUP_PATH" || echo "[!] cgroup 정리 실패: $CGROUP_PATH (계속 진행)"
 sudo ip netns delete "$NETNS_NAME" || echo "[!] netns 정리 실패: $NETNS_NAME (계속 진행)"
+
+if [[ "$MODE" == "agent" ]]; then
+    jq --arg end "$(date -Is)" --argjson rc "$RC" \
+       '. + {ended_at:$end, exit_code:$rc}' "$SESSION_DIR/meta.json" \
+      | sudo tee "$SESSION_DIR/meta.json.tmp" > /dev/null
+    sudo mv "$SESSION_DIR/meta.json.tmp" "$SESSION_DIR/meta.json"
+fi
+
+exit "$RC"

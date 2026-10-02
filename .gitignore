@@ -6,6 +6,7 @@ vmlinux.h
 # 빌드 바이너리
 src/myc_loader
 src/mycontainer_run
+src/test_dispatcher
 
 # 로컬 전용 설정
 .claude/settings.local.json

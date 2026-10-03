@@ -55,10 +55,15 @@ CGROUP_PATH="/sys/fs/cgroup/$CGROUP_NAME"
 sudo mkdir "$CGROUP_PATH"
 if [[ "$MODE" == "agent" ]]; then
     SESSION_ID="$(date +%Y%m%d-%H%M%S)-$$"
-    SESSION_DIR="/var/lib/mycontainer/sessions/$SESSION_ID"
+    SESSIONS_ROOT="/var/lib/mycontainer/sessions"
+    SESSION_DIR="$SESSIONS_ROOT/$SESSION_ID"
     sudo mkdir -p "$SESSION_DIR"
 
     CGROUP_ID=$(stat -c %i "$CGROUP_PATH")
+    # cgroup id → 세션 대응표. 로더가 첫 이벤트를 받을 때 readlink 로 읽는다.
+    sudo mkdir -p "$SESSIONS_ROOT/by-cgroup"
+    sudo ln -sfn "../$SESSION_ID" "$SESSIONS_ROOT/by-cgroup/$CGROUP_ID"
+
     jq -n --arg sid "$SESSION_ID" --argjson cid "$CGROUP_ID" \
             --arg start "$(date -Is)" --arg cmd "${CMD[*]}" \
             '{session_id:$sid, cgroup_id:$cid, started_at:$start, command:$cmd}' \

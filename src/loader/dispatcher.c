@@ -19,17 +19,17 @@
  * static 을 붙이면 "이 파일 안에서만 보이는" 변수가 된다. 다른 파일이 실수로
  * 건드리지 못하고, 이름이 겹쳐도 충돌하지 않는다.
  *
- * g_detectors : 탐지기 포인터를 담는 고정 크기 배열 (탐지기 "본체"가 아니라 주소만 저장)
- * g_count     : 지금까지 등록된 개수
- * g_sink      : 판정이 나오면 호출할 함수 (아직 지정 전이면 NULL)
- * g_sink_ctx  : sink 에 그대로 돌려줄 포인터
+ * g_detectors      : 탐지기 포인터를 담는 고정 크기 배열 (탐지기 "본체"가 아니라 주소만 저장)
+ * g_detector_count : 지금까지 등록된 탐지기 개수
+ * g_sink           : 판정이 나오면 호출할 함수 (아직 지정 전이면 NULL)
+ * g_sink_ctx       : sink 에 그대로 돌려줄 포인터
  *
  * 함수 밖에 선언한 static/전역 변수는 프로그램 시작 시 자동으로 0(NULL)으로 초기화된다.
  * 이 점이 중요한 이유는 register_detector 가 main() 보다 먼저(생성자에서) 호출되는데,
- * 그 시점에도 g_count 가 이미 0 이라서 안전하기 때문이다.
+ * 그 시점에도 g_detector_count 가 이미 0 이라서 안전하기 때문이다.
  */
 static struct detector *g_detectors[MAX_DETECTORS];
-static int g_count;
+static int g_detector_count;
 static verdict_sink_fn g_sink;
 static void *g_sink_ctx;
 
@@ -40,11 +40,11 @@ static void *g_sink_ctx;
  */
 void register_detector(struct detector *d)
 {
-    if (g_count >= MAX_DETECTORS) {
+    if (g_detector_count >= MAX_DETECTORS) {
         fprintf(stderr, "[dispatcher] 탐지기가 너무 많음, 무시: %s\n", d->name);
         return;
     }
-    g_detectors[g_count++] = d;   /* 현재 개수 위치에 넣고 개수를 1 올림 (후위 증가) */
+    g_detectors[g_detector_count++] = d;   /* 현재 개수 위치에 넣고 개수를 1 올림 (후위 증가) */
 }
 
 void dispatcher_set_sink(verdict_sink_fn fn, void *ctx)
@@ -103,7 +103,7 @@ void dispatch_event(const void *data, size_t len)
     __u32 bit = KIND_BIT(h->kind);        /* 이 이벤트 종류에 해당하는 비트 */
 
     /* 등록된 탐지기를 순서대로 돌면서 */
-    for (int i = 0; i < g_count; i++) {
+    for (int i = 0; i < g_detector_count; i++) {
         struct detector *d = g_detectors[i];
 
         /* 꺼졌거나 이 종류를 구독하지 않았으면 건너뜀. continue = 이번 반복은 여기서 끝 */
@@ -147,7 +147,7 @@ void dispatch_event(const void *data, size_t len)
 
 void dispatcher_reset_for_test(void)
 {
-    g_count = 0;
+    g_detector_count = 0;
     g_sink = NULL;
     g_sink_ctx = NULL;
 }

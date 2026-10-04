@@ -1,0 +1,3 @@
+{"schema_version":0,"type":"event","session":"20261003-205846-1105469","logged_at_ms":1791028726518,"event":{"kind":"EXEC","pid":1105572,"cgroup_id":316660,"ts_ns":2114099094370277,"filename":"/proc/self/exe"}}
+{"schema_version":0,"type":"event","session":"20261003-205846-1105469","logged_at_ms":1791028726519,"event":{"kind":"EXEC","pid":1105572,"cgroup_id":316660,"ts_ns":2114099095286735,"filename":"/bin/sh"}}
+{"schema_version":0,"type":"event","session":"20261003-205846-1105469","logged_at_ms":1791028726519,"event":{"kind":"EXEC","pid":1105574,"cgroup_id":316660,"ts_ns":2114099095895402,"filename":"/tmp/trigger"}}

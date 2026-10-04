@@ -55,7 +55,7 @@ CGROUP_PATH="/sys/fs/cgroup/$CGROUP_NAME"
 sudo mkdir "$CGROUP_PATH"
 if [[ "$MODE" == "agent" ]]; then
     SESSION_ID="$(date +%Y%m%d-%H%M%S)-$$"
-    SESSIONS_ROOT="/var/lib/mycontainer/sessions"
+    SESSIONS_ROOT="${MYC_SESSIONS_ROOT:-/var/lib/mycontainer/sessions}"
     SESSION_DIR="$SESSIONS_ROOT/$SESSION_ID"
     sudo mkdir -p "$SESSION_DIR"
 

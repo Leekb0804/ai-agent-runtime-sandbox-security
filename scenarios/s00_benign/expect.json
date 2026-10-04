@@ -1,0 +1,20 @@
+{
+  "description": "무해한 명령(/bin/ls) 하나. 커널이 실행을 관측하고, 아무것도 차단되지 않아야 한다.",
+  "expect": [
+    {
+      "note": "양성 검사 (탐지기와 무관): 커널이 /bin/ls 의 실행을 관측해서 이벤트로 기록했다. 이 검사가 없으면 빈 로그도 통과한다",
+      "match": { "type": "event", "kind": "EXEC", "filename": "/bin/ls" },
+      "min": 1
+    },
+    {
+      "note": "무해한 작업은 차단되지 않는다",
+      "match": { "type": "verdict", "level": "BLOCK" },
+      "count": 0
+    },
+    {
+      "note": "차단이 없으므로 종료 요청도 없다",
+      "match": { "type": "action" },
+      "count": 0
+    }
+  ]
+}

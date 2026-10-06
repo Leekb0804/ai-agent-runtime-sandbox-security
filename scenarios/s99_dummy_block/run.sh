@@ -4,7 +4,8 @@
 # 실제 위험한 동작은 하지 않는다. 내용이 비어 있는 스크립트를 만들어 실행할 뿐이다.
 #
 # 끝의 "; true": 이것 없이 /tmp/trigger 를 마지막 명령으로 실행하면, 컨테이너 안에서
-# 그 execve 이벤트가 로그에 나타나지 않았다 (2026-10-07 s99 FAIL).
+# 그 execve 이벤트가 로그에 나타나지 않았다 (w1d5 s99 FAIL).
 # 호스트의 busybox strace 로는 두 경우 모두 execve 가 호출된다.
 # 원인은 조사 중이므로 원인이 밝혀지기 전에는 지우지 않는다.
+# w2d1: 현재 빌드에서 '; true' 없이 38회 실행(수동 4, 러너 34) 모두 관측됨. 재현 불가, 원인 미규명. 그래서 지우지 않는다.
 echo "#!/bin/sh" > /tmp/trigger; chmod +x /tmp/trigger; /tmp/trigger; true

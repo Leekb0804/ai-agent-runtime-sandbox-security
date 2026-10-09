@@ -37,7 +37,10 @@ static int failures;
 /* ===================== 테스트용 탐지기 ===================== */
 
 /* 각 탐지기가 몇 번 호출됐는지 세는 카운터 */
-static int calls_exec, calls_write, calls_bad, calls_good;
+static int calls_exec, calls_write, calls_bad, calls_good, calls_tag;
+
+/* TAG_HIT 탐지기가 마지막으로 본 값 (헤더의 cgroup_id = 쓴 세션, payload 의 exec_cgroup_id = 실행자) */
+static __u64 seen_owner_cg, seen_exec_cg;
 
 /* EXEC 만 구독하고 항상 BLOCK 판정을 내림 */
 static int on_exec_only(const struct event_hdr *h, size_t len, struct verdict *v)
@@ -75,6 +78,20 @@ static int always_ok(const struct event_hdr *h, size_t len, struct verdict *v)
     return 1;
 }
 
+/* TAG_HIT 만 구독. 호출 횟수를 세고 헤더와 payload 의 cgroup 값을 기록한다 (판정은 내지 않음) */
+static int on_tag_only(const struct event_hdr *h, size_t len, struct verdict *v)
+{
+    (void)v;
+    calls_tag++;
+    /* 디스패처가 이미 길이를 검증하지만, 구조체로 읽기 전에 한 번 더 확인한다 */
+    if (len < sizeof(struct evt_tag_hit))
+        return -1;
+    const struct evt_tag_hit *e = (const struct evt_tag_hit *)h;
+    seen_owner_cg = h->cgroup_id;
+    seen_exec_cg = e->exec_cgroup_id;
+    return 0;
+}
+
 /* ===================== 판정 처리 함수(sink) ===================== */
 
 /* 판정이 몇 번, 누구로부터, 어떤 수준으로 전달됐는지 기록 */
@@ -94,7 +111,8 @@ static void test_sink(const struct event_hdr *h, size_t len,
 /* 각 테스트를 시작하기 전에 카운터를 0 으로 되돌림 */
 static void reset_counters(void)
 {
-    calls_exec = calls_write = calls_bad = calls_good = 0;
+    calls_exec = calls_write = calls_bad = calls_good = calls_tag = 0;
+    seen_owner_cg = seen_exec_cg = 0;
     sink_count = 0;
     last_detector[0] = '\0';
 }
@@ -114,6 +132,25 @@ static struct evt_exec make_exec(const char *filename)
     e.hdr.cgroup_id = 1;
     e.hdr.payload_len = sizeof(e.filename);
     snprintf(e.filename, sizeof(e.filename), "%s", filename);
+    return e;
+}
+
+/*
+ * 합성 TAG_HIT 이벤트. owner_cg 는 파일을 쓴 세션, exec_cg 는 실행한 쪽의 cgroup 이다.
+ * memset 으로 전체를 0 으로 채워 패딩과 filename 의 남은 영역에 쓰레기 값이 섞이지 않게 한다.
+ */
+static struct evt_tag_hit make_tag_hit(__u64 owner_cg, __u64 exec_cg)
+{
+    struct evt_tag_hit e;
+    memset(&e, 0, sizeof(e));
+    e.hdr.kind = EVT_TAG_HIT;
+    e.hdr.pid = 200;
+    e.hdr.cgroup_id = owner_cg;
+    e.hdr.payload_len = sizeof(e) - sizeof(e.hdr);
+    e.exec_cgroup_id = exec_cg;
+    e.dev = 265289730;
+    e.ino = 3549503;
+    snprintf(e.filename, sizeof(e.filename), "/tmp/trigger");
     return e;
 }
 
@@ -184,6 +221,45 @@ static void test_length_validation(void)
     e.hdr.kind = 99;
     dispatch_event(&e, sizeof(e));
     CHECK(calls_exec == 0, "범위 밖 kind 는 무시");
+}
+
+/* ===================== 테스트: TAG_HIT 분배와 길이 검증 ===================== */
+static void test_tag_hit(void)
+{
+    printf("[TAG_HIT 분배와 길이 검증]\n");
+    dispatcher_reset_for_test();
+    reset_counters();
+
+    /* TAG_HIT 구독자(t)와 EXEC 구독자(x)를 함께 등록한다. static 이므로 상태를 직접 되돌린다 */
+    static struct detector t = { .name = "tag_only",  .kinds = KIND_BIT(EVT_TAG_HIT), .on_event = on_tag_only };
+    static struct detector x = { .name = "exec_only", .kinds = KIND_BIT(EVT_EXEC),    .on_event = on_exec_only };
+    t.err_streak = x.err_streak = 0;
+    t.disabled = x.disabled = 0;
+    register_detector(&t);
+    register_detector(&x);
+    dispatcher_set_sink(test_sink, NULL);
+
+    /* 정상 길이의 TAG_HIT (소유 세션 cgroup 7, 실행자 cgroup 9) */
+    struct evt_tag_hit e = make_tag_hit(7, 9);
+    dispatch_event(&e, sizeof(e));
+    CHECK(calls_tag == 1, "TAG_HIT 구독 탐지기가 호출됨");
+    CHECK(calls_exec == 0, "EXEC 구독 탐지기는 TAG_HIT 에 반응하지 않음");
+    CHECK(seen_owner_cg == 7 && seen_exec_cg == 9,
+          "헤더 cgroup_id(쓴 세션)와 exec_cgroup_id(실행자)가 그대로 전달됨");
+
+    /* TAG_HIT 구조체보다 1바이트 짧게 알려 준다 -> payload 가 잘렸으니 무시되어야 함 */
+    dispatch_event(&e, sizeof(struct evt_tag_hit) - 1);
+    CHECK(calls_tag == 1, "TAG_HIT 구조체보다 짧은 이벤트는 무시");
+
+    /* 헤더 길이만 알려 준다 -> 무시되어야 함 (min_len_for_kind 의 default 로 통과하면 안 된다) */
+    dispatch_event(&e, sizeof(struct event_hdr));
+    CHECK(calls_tag == 1, "헤더 길이만 있는 TAG_HIT 도 무시");
+
+    /* EXEC 이벤트는 TAG_HIT 구독자에게 가지 않고 EXEC 구독자에게만 간다 */
+    struct evt_exec ex = make_exec("/bin/ls");
+    dispatch_event(&ex, sizeof(ex));
+    CHECK(calls_tag == 1, "TAG_HIT 구독 탐지기는 EXEC 에 반응하지 않음");
+    CHECK(calls_exec == 1, "EXEC 구독 탐지기는 EXEC 에 반응함");
 }
 
 /* ===================== 테스트 3: 탐지기 오류 격리 ===================== */
@@ -268,6 +344,7 @@ int main(void)
 {
     test_subscription();
     test_length_validation();
+    test_tag_hit();
     test_error_isolation();
     test_json_escape();
 

@@ -78,3 +78,4 @@ int on_execve(struct trace_event_raw_sys_enter *ctx)
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
+#include "write_tag.h"

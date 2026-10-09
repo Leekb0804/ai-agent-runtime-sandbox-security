@@ -20,6 +20,7 @@ enum evt_kind {
     EVT_WRITE = 2,   /* 파일 쓰기 (2주차 예정) */
     EVT_OPEN  = 3,   /* 파일 open (2주차 예정) */
     EVT_DNS   = 4,   /* DNS 쿼리 (v0.3 예정) */
+    EVT_TAG_HIT = 5,   /* 세션이 쓴 파일이 exec 됨 (2주차) */
 };
 
 /*
@@ -30,7 +31,7 @@ enum evt_kind {
 struct event_hdr {
     __u32 kind;          /* enum evt_kind */
     __u32 pid;           /* 이벤트를 일으킨 프로세스의 tgid (사용자 눈에 보이는 PID) */
-    __u64 cgroup_id;     /* 이벤트가 발생한 cgroup id (세션 식별 기준) */
+    __u64 cgroup_id;     /* 이벤트가 발생한 cgroup id (세션 식별 기준). EVT_TAG_HIT 만 예외: 파일을 쓴 세션의 cgroup (struct evt_tag_hit 주석 참고) */
     __u64 ts_ns;         /* bpf_ktime_get_ns() 값. 부팅 후 경과 나노초 (벽시계 아님) */
     __u32 payload_len;   /* 헤더 뒤 payload 길이(바이트) */
     __u32 _pad;          /* 8바이트 정렬용 패딩. 구조체 크기를 양쪽에서 동일하게 유지 */
@@ -46,6 +47,25 @@ struct event_hdr {
 struct evt_exec {
     struct event_hdr hdr;
     char filename[MAX_FILENAME];   /* execve의 첫 번째 인자. 길면 잘림 */
+};
+
+/*
+ * EVT_TAG_HIT 이벤트: write_tags 에 태그된 파일이 exec 되었다.
+ * 예외 규칙: 이 이벤트만 헤더의 cgroup_id 와 pid 가 서로 다른 주체를 가리킨다.
+ *   hdr.cgroup_id   : 파일을 쓴(태그한) 세션의 cgroup. 로더가 이 값으로 세션 폴더를 고른다.
+ *   hdr.pid         : exec 한 프로세스의 tgid
+ *   exec_cgroup_id  : exec 한 프로세스의 cgroup. 탐지기가 hdr.cgroup_id 와 비교해 세션 밖 실행을 판정한다.
+ * 같은 세션 안에서 쓰고 실행한 경우에도 이 이벤트가 나온다 (두 cgroup 이 같다).
+ */
+struct evt_tag_hit {
+    struct event_hdr hdr;
+    __u64 exec_cgroup_id;          /* exec 한 프로세스의 cgroup */
+    __u64 tag_ts_ns;               /* 태그 시각 (마지막 쓰기 open, 부팅 후 경과 ns) */
+    __u64 tag_write_count;         /* 태그된 쓰기 open 횟수 */
+    __u32 dev;                     /* 파일 신원: s_dev */
+    __u32 _pad;                    /* 8바이트 정렬용 */
+    __u64 ino;                     /* 파일 신원: i_ino */
+    char filename[MAX_FILENAME];   /* bprm->filename (exec 요청 경로). 길면 잘림 */
 };
 
 #endif /* EVENT_H */

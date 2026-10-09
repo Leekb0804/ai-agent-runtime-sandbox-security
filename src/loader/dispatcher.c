@@ -68,12 +68,14 @@ const char *verdict_level_str(enum verdict_level level)
  * 받은 바이트 수(len)가 이보다 짧은데 구조체로 캐스팅해서 읽으면 구조체 끝을 넘어
  * 엉뚱한 메모리를 읽게 된다(버퍼 오버리드). 그래서 해석하기 전에 길이를 먼저 검사한다.
  *   EXEC    : 헤더 + filename 이 모두 있어야 함
+ *   TAG_HIT : 헤더 + payload 전체가 있어야 함
  *   그 외    : 일단 헤더만 있으면 통과 (WRITE 등은 2주차에 구조체가 정해지면 추가)
  */
 static size_t min_len_for_kind(__u32 kind)
 {
     switch (kind) {
     case EVT_EXEC: return sizeof(struct evt_exec);
+    case EVT_TAG_HIT: return sizeof(struct evt_tag_hit);
     default:       return sizeof(struct event_hdr);
     }
 }

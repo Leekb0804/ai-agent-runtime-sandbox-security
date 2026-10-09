@@ -41,6 +41,7 @@ static const char *kind_str(__u32 kind)
     case EVT_WRITE: return "WRITE";
     case EVT_OPEN:  return "OPEN";
     case EVT_DNS:   return "DNS";
+    case EVT_TAG_HIT: return "TAG_HIT";
     default:        return "UNKNOWN";
     }
 }
@@ -60,6 +61,14 @@ static void put_event_obj(FILE *f, const struct event_hdr *h, size_t len)
 
     if (h->kind == EVT_EXEC && len >= sizeof(struct evt_exec)) {
         const struct evt_exec *e = (const struct evt_exec *)h;
+        fputs(",\"filename\":", f);
+        json_put_string(f, e->filename, MAX_FILENAME);   /* 공격자가 정할 수 있는 값 */
+    }
+    if (h->kind == EVT_TAG_HIT && len >= sizeof(struct evt_tag_hit)) {
+        const struct evt_tag_hit *e = (const struct evt_tag_hit *)h;
+        fprintf(f, ",\"exec_cgroup_id\":%llu,\"tag_ts_ns\":%llu,\"tag_write_count\":%llu,\"dev\":%u,\"ino\":%llu",
+                (unsigned long long)e->exec_cgroup_id, (unsigned long long)e->tag_ts_ns,
+                (unsigned long long)e->tag_write_count, e->dev, (unsigned long long)e->ino);
         fputs(",\"filename\":", f);
         json_put_string(f, e->filename, MAX_FILENAME);   /* 공격자가 정할 수 있는 값 */
     }

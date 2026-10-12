@@ -27,7 +27,7 @@ cd "$(dirname "$0")"
 #   verdict_handler.c : 판정 수집기
 COMMON_SRCS="loader/dispatcher.c loader/json_escape.c loader/jsonl.c loader/session_log.c loader/kill.c loader/verdict_handler.c"
 
-echo "[1/5] eBPF 오브젝트 (clang)"
+echo "[1/6] eBPF 오브젝트 (clang)"
 # -g                       : 디버그 정보 포함 (BTF 생성에 필요)
 # -O2                      : 최적화. eBPF 는 최적화 없이는 verifier 를 통과하지 못하는 경우가 많다
 # -target bpf              : BPF 바이트코드로 컴파일
@@ -37,10 +37,10 @@ echo "[1/5] eBPF 오브젝트 (clang)"
 clang -g -O2 -target bpf -D__TARGET_ARCH_arm64 -I bpf \
       -Wno-missing-declarations -c bpf/watcher.bpf.c -o watcher.bpf.o
 
-echo "[2/5] skeleton 생성"
+echo "[2/6] skeleton 생성"
 bpftool gen skeleton watcher.bpf.o > watcher.skel.h
 
-echo "[3/5] 로더 (myc_loader)"
+echo "[3/6] 로더 (myc_loader)"
 # detectors/*.c 는 셸 와일드카드로 그 디렉토리의 모든 .c 로 확장된다.
 # 탐지기 파일을 추가하는 것만으로 빌드에 포함된다 (스크립트 수정 불필요).
 #
@@ -53,14 +53,19 @@ gcc -Wall -Wextra -I. -Iloader -o myc_loader \
     loader/loader.c $COMMON_SRCS loader/detectors/*.c \
     -lbpf -lelf -lz
 
-echo "[4/5] 단위 테스트: 디스패처 (test_dispatcher)"
+echo "[4/6] 단위 테스트: 디스패처 (test_dispatcher)"
 # 검증 대상만 링크. 실제 탐지기(detectors/*.c)는 섞지 않는다 (테스트용 탐지기를 직접 등록).
 gcc -Wall -Wextra -I. -Iloader -o test_dispatcher \
     loader/test_dispatcher.c loader/dispatcher.c loader/json_escape.c
 
-echo "[5/5] 단위 테스트: 판정 처리와 세션 로그 (test_verdict_handler)"
+echo "[5/6] 단위 테스트: 판정 처리와 세션 로그 (test_verdict_handler)"
 # 이 테스트도 커널과 libbpf 가 필요 없다. 임시 디렉토리에 가짜 세션을 만들어 검증한다.
 gcc -Wall -Wextra -I. -Iloader -o test_verdict_handler \
     loader/test_verdict_handler.c $COMMON_SRCS
 
-echo "빌드 완료. 테스트: ./test_dispatcher && ./test_verdict_handler  /  실행: sudo ./myc_loader"
+echo "[6/6] 단위 테스트: write_exec_boundary 탐지기 (test_write_exec_boundary)"
+# 실제 탐지기 파일 하나만 링크한다 (생성자로 자동 등록됨). 다른 탐지기를 섞으면 판정이 달라진다.
+gcc -Wall -Wextra -I. -Iloader -o test_write_exec_boundary \
+    loader/test_write_exec_boundary.c loader/dispatcher.c loader/detectors/write_exec_boundary.c
+
+echo "빌드 완료. 테스트: ./test_dispatcher && ./test_verdict_handler && ./test_write_exec_boundary  /  실행: sudo ./myc_loader"

@@ -29,6 +29,13 @@ sid="mock-$(date +%s%N)"
 
 # 진짜 agent-run 과 같은 형식의 한 줄을 출력한다. 러너가 sed 로 세션 ID 를 뽑는 바로 그 줄이다.
 echo "[*] 세션 시작: $sid (cgroup_id=1)"
+
+# MYC_CONTAINERS_ROOT 가 있으면 진짜 agent-run 처럼 컨테이너 폴더(mycontainer-<세션 번호>/upper/tmp)를 만든다.
+# 단 MOCK_NO_CONTAINER=1 이면 만들지 않는다 (컨테이너 폴더가 없는 경우를 재현하는 테스트용).
+# 러너의 host.sh 스텝이 이 폴더를 찾는다. ${sid##*-} 는 세션 ID 에서 마지막 '-' 뒤만 남긴 것이다 (mock-<숫자> 이면 그 숫자).
+if [[ -n "${MYC_CONTAINERS_ROOT:-}" && "${MOCK_NO_CONTAINER:-0}" != 1 ]]; then
+    mkdir -p "$MYC_CONTAINERS_ROOT/mycontainer-${sid##*-}/upper/tmp"
+fi
 # ${MOCK_MODE:-normal} : 환경변수가 없으면 normal.
 mode="${MOCK_MODE:-normal}"
 

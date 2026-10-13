@@ -25,11 +25,19 @@ ROOT="$(cd "$HERE/.." && pwd)"
 # 검사 대상은 러너(run_scenarios.sh)이다. 진짜 로더와 컨테이너 대신 tools/mock 의 가짜를 끼워 넣고 실행한다.
 RUNNER="$ROOT/run_scenarios.sh"
 
+# 러너 테스트 전용 시나리오 폴더. 실제 scenarios/ 에 시나리오가 늘어도 이 테스트가 흔들리지 않게 s00 과 s99 만 링크로 건다.
+# 링크이므로 원본 시나리오가 바뀌면 테스트도 같은 것을 본다. 호스트 스텝 테스트가 만드는 임시 시나리오도 이 폴더 안에 둔다.
+SCEN="$(mktemp -d)"
+ln -s "$ROOT/scenarios/s00_benign" "$SCEN/s00_benign"
+ln -s "$ROOT/scenarios/s99_dummy_block" "$SCEN/s99_dummy_block"
+# 호스트 스텝 테스트가 컨테이너 폴더를 둘 임시 폴더 (mock agent-run 이 이 아래에 mycontainer-<번호>/upper 를 만든다)
+CONT="$(mktemp -d)"
+
 failures=0
 # mktemp : 임시 "파일"을 만들고 경로를 출력한다 (-d 를 붙이면 폴더). 러너의 출력을 여기에 모아 두고 검사한다.
 OUT="$(mktemp)"
 # trap '명령' EXIT : 스크립트가 어떻게 끝나든 마지막에 그 명령을 실행한다. 여기서는 임시 파일을 지운다.
-trap 'rm -f "$OUT"' EXIT
+trap 'rm -f "$OUT"; rm -rf "$SCEN" "$CONT"' EXIT
 
 # 가짜 구현으로 러너를 실행하고 종료 코드를 확인한다.
 #   check "<설명>" <기대 종료 코드> [환경변수=값 ...]
@@ -42,7 +50,7 @@ check() {
     # env 변수=값 ... 명령 : 그 환경변수들을 지정해서 명령을 실행한다. "$@" 는 남은 인자 전체이다.
     # 즉 이 줄은 MYC_RUNNER_TEST=1 MYC_SRC_DIR=tools/mock MOCK_MODE=... ./run_scenarios.sh 와 같다.
     # 출력과 오류 출력은 모두 OUT 파일에 모은다 (>"$OUT" 2>&1). 바로 다음 줄에서 종료 코드를 got 에 저장한다.
-    env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" "$@" "$RUNNER" >"$OUT" 2>&1
+    env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MYC_CONTAINERS_ROOT="$CONT" "$@" "$RUNNER" >"$OUT" 2>&1
     got=$?
     # 러너의 종료 코드가 기대와 같은지 비교한다.
     if [[ "$got" == "$want" ]]; then
@@ -94,6 +102,50 @@ echo "[기다리는가]"
 # 러너가 그 도중에 읽지 않고 줄 수가 안정될 때까지 기다려야 통과한다 (wait_settled 가 하는 일).
 check "로그가 늦게(0.3초 간격) 써져도 다 쓸 때까지 기다려서 통과" 0 MOCK_MODE=slow
 
+echo "[호스트 스텝 (host.sh)]"
+# 임시 시나리오 하나를 SCEN 에 만들고 --only 로 그것만 실행한다. 정상 s00 로그를 쓰는 mock 이므로 기대(expect.json)는 s00 과 같다.
+# 시나리오 이름은 s_host 로 하고 끝나면 지운다. run.sh 에는 trigger 가 없으므로 mock 이 s00 로그를 만든다.
+make_host_scn() {
+    # 인자 $1 = host.sh 본문. 폴더를 새로 만들고 run.sh, expect.json, host.sh 를 쓴다.
+    rm -rf "$SCEN/s_host"
+    mkdir -p "$SCEN/s_host"
+    echo '/bin/ls' > "$SCEN/s_host/run.sh"
+    cp "$ROOT/scenarios/s00_benign/expect.json" "$SCEN/s_host/expect.json"
+    printf '%s\n' "$1" > "$SCEN/s_host/host.sh"
+}
+# 케이스 1: host.sh 가 실패(종료 코드 3)하면 러너가 FAIL 하고 종료 코드를 알려 준다.
+make_host_scn 'exit 3'
+env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MYC_CONTAINERS_ROOT="$CONT" MOCK_MODE=normal "$RUNNER" --only 's_host' >"$OUT" 2>&1
+got=$?
+if [[ $got -eq 1 ]] && grep -qF "호스트 스텝(host.sh)이 실패했다. 종료 코드 3" "$OUT"; then
+    echo "  PASS  host.sh 가 실패하면 종료 코드를 알려 주고 FAIL"
+else
+    echo "  FAIL  host.sh 실패를 잡지 못함 (종료 코드 $got)"; sed 's/^/        /' "$OUT"; failures=$((failures + 1))
+fi
+# 케이스 2: host.sh 가 컨테이너 폴더(MYC_UPPER)를 받고 그 안에 표시 파일을 남기면, 호스트 스텝이 컨테이너 폴더에서 실행된 것이다.
+# 호스트 스텝 뒤에 이벤트가 늘지 않으므로 러너는 그 사실을 호스트 스텝 출력에 남기고 판정으로 넘어가 통과(s00 기대)한다.
+make_host_scn 'touch "${MYC_UPPER:?}/host_ran"; echo "[host.sh] MYC_UPPER=$MYC_UPPER"'
+env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MYC_CONTAINERS_ROOT="$CONT" MOCK_MODE=normal "$RUNNER" --only 's_host' >"$OUT" 2>&1
+got=$?
+# 종료 코드 0 이고, CONT 아래 어떤 컨테이너 폴더의 upper 에 host_ran 이 생겼는지 find 로 찾는다 (-name 파일 이름, -path 경로 패턴).
+if [[ $got -eq 0 ]] && [[ -n "$(find "$CONT" -path '*/upper/host_ran' -name host_ran 2>/dev/null)" ]]; then
+    echo "  PASS  host.sh 가 컨테이너 폴더(MYC_UPPER)를 받아 실행됨"
+else
+    echo "  FAIL  host.sh 가 컨테이너 폴더에서 실행되지 않음 (종료 코드 $got)"; sed 's/^/        /' "$OUT"; failures=$((failures + 1))
+fi
+# 케이스 3: 컨테이너 폴더가 없으면(진짜 agent-run 의 폴더 이름 규칙이 깨진 경우) 시작하지 않고 FAIL 한다 (fail-closed).
+# MOCK_NO_CONTAINER=1 로 mock 이 컨테이너 폴더를 만들지 않게 한다. 존재하지 않는 경로를 쓰지 않으므로 root 로 실행해도 시스템에 폴더가 생기지 않는다.
+make_host_scn 'exit 0'
+env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MYC_CONTAINERS_ROOT="$CONT" MOCK_NO_CONTAINER=1 MOCK_MODE=normal "$RUNNER" --only 's_host' >"$OUT" 2>&1
+got=$?
+if [[ $got -eq 1 ]] && grep -qF "컨테이너 폴더를 찾지 못함" "$OUT"; then
+    echo "  PASS  컨테이너 폴더가 없으면 host.sh 를 실행하지 않고 FAIL"
+else
+    echo "  FAIL  컨테이너 폴더가 없는 경우를 잡지 못함 (종료 코드 $got)"; sed 's/^/        /' "$OUT"; failures=$((failures + 1))
+fi
+rm -rf "$SCEN/s_host"
+echo
+
 echo "[시작을 거부하는가 (종료 코드 2)]"
 check "로더가 준비되지 못하면 시작하지 않음" 2 MOCK_MODE=noready
 expect_text "로더 출력을 보여 줌" "BPF 로드 실패"
@@ -102,7 +154,7 @@ expect_text "로더 출력을 보여 줌" "BPF 로드 실패"
 # 아래 세 묶음은 check 함수를 쓰지 않고 풀어 쓴 것이다 (옵션을 직접 넘기거나 확인 조건이 달라서).
 # 구조는 같다: 실행 -> got=$? -> 조건 확인 -> PASS/FAIL 출력.
 # --only 's99*' : 따옴표로 감싸서, 쉘이 s99* 를 파일 이름으로 펼치지 않고 러너에 글자 그대로 넘긴다.
-env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MOCK_MODE=normal "$RUNNER" --only 's99*' >"$OUT" 2>&1
+env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MOCK_MODE=normal "$RUNNER" --only 's99*' >"$OUT" 2>&1
 got=$?
 # 두 조건을 && 로 잇는다. 종료 코드가 0 이고 (-eq 는 숫자 비교), 출력에 "시나리오 1/1 통과" 가 있어야 한다.
 if [[ $got -eq 0 ]] && grep -qF "시나리오 1/1 통과" "$OUT"; then
@@ -112,7 +164,7 @@ else
     echo "  FAIL  --only 's99*' 동작 이상"; sed 's/^/        /' "$OUT"; failures=$((failures + 1))
 fi
 # 이름과 맞는 시나리오가 없는 패턴('zzz*')이면 러너는 종료 코드 2 로 끝나야 한다 ("통과"처럼 보이면 안 된다).
-env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MOCK_MODE=normal "$RUNNER" --only 'zzz*' >"$OUT" 2>&1
+env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MOCK_MODE=normal "$RUNNER" --only 'zzz*' >"$OUT" 2>&1
 got=$?
 if [[ $got -eq 2 ]]; then
     echo "  PASS  맞는 시나리오가 없으면 종료 코드 2"

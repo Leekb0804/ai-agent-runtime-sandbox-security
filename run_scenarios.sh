@@ -13,6 +13,7 @@
 # ===== 시나리오 형식 =====
 #   scenarios/<이름>/run.sh        컨테이너 안에서 실행할 스크립트 (러너가 /bin/sh -c 로 넘김)
 #   scenarios/<이름>/expect.json   기대하는 세션 로그 (형식은 tools/judge.sh 의 설명 참고)
+#   scenarios/<이름>/host.sh       (선택) 컨테이너가 끝난 뒤 호스트에서 실행할 스크립트. 환경변수 MYC_UPPER 로 그 컨테이너의 upperdir 를 받는다
 # 이름은 s 로 시작해야 한다. s00~s98 은 실제 시나리오, s99 는 더미 탐지기 검증용으로 예약해 둔다.
 #
 # ===== 러너가 하는 일 (순서) =====
@@ -51,7 +52,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # 평소에는 진짜 src 를 쓰고, 테스트에서만 가짜 구현이 있는 폴더로 바꿔 끼운다.
 # 환경변수 지정법: 명령 앞에 변수=값 을 붙이면 그 명령에만 전달된다 (예: MYC_SRC_DIR=tools/mock ./run_scenarios.sh).
 SRC_DIR="${MYC_SRC_DIR:-$HERE/src}"        # 테스트에서만 가짜 구현으로 바꿔 끼운다 (tools/test_runner.sh)
-SCEN_DIR="$HERE/scenarios"
+# 시나리오 폴더. 평소에는 저장소의 scenarios/ 이고 테스트에서만 MYC_SCEN_DIR 로 바꿔 끼운다 (tools/test_runner.sh). 이름이 s 로 시작하는 폴더만 시나리오로 읽는다.
+SCEN_DIR="${MYC_SCEN_DIR:-$HERE/scenarios}"
+# 컨테이너 폴더(upperdir 이 있는 곳)의 부모. host.sh 스텝이 컨테이너가 쓴 파일을 찾을 때 쓴다. 테스트에서는 MYC_CONTAINERS_ROOT 로 바꾼다.
+CONTAINERS_ROOT="${MYC_CONTAINERS_ROOT:-/var/lib/mycontainer/containers}"
 JUDGE="$HERE/tools/judge.sh"
 
 # 대문자 이름의 변수는 "상수처럼 쓰는 설정값"이라는 관례이다 (쉘 문법상 특별한 것은 아니다). 필요하면 값만 조정한다.
@@ -276,6 +280,52 @@ run_one() {
         return 1
     fi
 
+    # ---- 호스트 쪽 스텝 (선택). 시나리오 폴더에 host.sh 가 있을 때만 실행한다 ----
+    # agent-run 이 끝난 뒤에 러너가 호스트에서 실행한다. 컨테이너가 쓴 파일은 컨테이너가 끝난 뒤에도 upperdir 에 남아 있으므로
+    # "세션이 쓴 파일을 세션 밖이 실행"하는 사건을 레이스 없이 재현할 수 있다. (러너가 세션 cgroup 밖이라고 가정한다. s01 이 이를 검증한다)
+    if [[ -f "$dir/host.sh" ]]; then
+        # 이 블록에서만 쓰는 변수들. hn0 는 호스트 스텝 전의 events.jsonl 줄 수, grown 은 줄이 늘었는지, waited 는 기다린 시간(ms).
+        local suffix cdir hn0 hrc grown=0 waited=0
+        # ${sid##*-} : 세션 ID 에서 마지막 '-' 앞을 모두 지우고 뒷부분만 남긴다 (예: 20261012-141616-1329260 -> 1329260).
+        # run_container.sh 가 세션 ID 를 "날짜-시각-스크립트PID" 로 만들고 컨테이너 폴더도 같은 번호로 이름 짓는다는 관찰에 의존한다 (이 가정이 깨지면 아래에서 실패한다).
+        suffix="${sid##*-}"
+        cdir="$CONTAINERS_ROOT/mycontainer-$suffix"
+        # -d 폴더 : 폴더가 있으면 참. upper 폴더가 없으면 host.sh 가 쓴 파일을 찾을 수 없으니 시작하지 않고 실패한다 (fail-closed).
+        if [[ ! -d "$cdir/upper" ]]; then
+            echo "[FAIL] $name"
+            echo "        컨테이너 폴더를 찾지 못함: $cdir/upper (host.sh 를 실행할 수 없다)"
+            return 1
+        fi
+        # 호스트 스텝 전의 줄 수를 기억해 둔다. 이보다 늘어나야 호스트 실행이 관측된 것이다.
+        hn0="$(count_lines "$events")"
+        # 변수=값 명령 : 그 명령에만 환경변수를 준다. MYC_UPPER 는 host.sh 가 컨테이너 안 /tmp/payload 를 호스트에서 $MYC_UPPER/tmp/payload 로 찾는 데 쓴다.
+        # timeout : host.sh 가 멈추는 경우를 막는다. 출력은 시나리오별 파일에 모은다. 종료 코드는 바로 hrc 에 저장한다.
+        MYC_UPPER="$cdir/upper" timeout "$AGENT_TIMEOUT_S" /bin/bash "$dir/host.sh" >"$WORK/$name.host.out" 2>&1
+        hrc=$?
+        # host.sh 자체가 실패하면(종료 코드 != 0) 판정까지 가지 않고 바로 실패한다.
+        if [[ $hrc -ne 0 ]]; then
+            echo "[FAIL] $name"
+            echo "        호스트 스텝(host.sh)이 실패했다. 종료 코드 $hrc"
+            echo "        출력: $WORK/$name.host.out"
+            return 1
+        fi
+        # 새 줄이 생길 때까지 0.1초마다 확인한다 (최대 SETTLE_MAX_S 초). 이미 안정된 로그에 wait_settled 만 부르면 새 줄이 오기 전에 "안정"으로 끝날 수 있어서 먼저 기다린다.
+        while ((waited < SETTLE_MAX_S * 1000)); do
+            if [[ "$(count_lines "$events")" -gt "$hn0" ]]; then grown=1; break; fi
+            sleep 0.1
+            waited=$((waited + 100))
+        done
+        # 새 줄이 안 생겼으면 판정으로 그대로 넘어간다 (판정기가 어떤 기대가 왜 안 맞는지 보여 준다). 사실만 출력 파일에 남긴다.
+        if [[ $grown -ne 1 ]]; then echo "[runner] 호스트 스텝 뒤에 이벤트가 늘지 않았다 (${SETTLE_MAX_S}초)" >>"$WORK/$name.host.out"; fi
+        # 새 줄이 생긴 뒤 로더가 다 쓸 때까지 한 번 더 기다린다.
+        if ! wait_settled "$events"; then
+            echo "[FAIL] $name"
+            echo "        호스트 스텝 뒤 세션 $sid 의 로그가 안정되지 않았다 (${SETTLE_MAX_S}초)"
+            echo "        세션 폴더: $SESS_ROOT/$sid"
+            return 1
+        fi
+    fi
+
     # 판정. 출력은 변수에 담아 두었다가 결과에 따라 보여 준다.
     local out
     # 판정기를 실행하고, 화면에 나올 모든 글자(오류 출력 포함)를 out 변수에 담는다.
@@ -301,6 +351,8 @@ run_one() {
     else
         print_judge 0 <<<"$out"
     fi
+    # host.sh 스텝이 있었으면 그 출력 위치도 알려 준다 (실패 원인이 호스트 쪽에 있을 수 있다)
+    [[ -f "$WORK/$name.host.out" ]] && echo "        호스트 스텝 출력: $WORK/$name.host.out"
     echo "        세션 폴더: $SESS_ROOT/$sid"
     return 1
 }

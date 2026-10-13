@@ -1,0 +1,30 @@
+{
+  "description": "컨테이너가 쓴 파일을 호스트(세션 밖)가 직접 실행하면 write_exec_boundary 가 BLOCK 을 내고 종료 요청이 한 번 기록된다.",
+  "expect": [
+    {
+      "note": "커널이 쓴 파일의 실행(TAG_HIT)을 관측했다 (탐지기와 무관한 사실)",
+      "match": { "type": "event", "kind": "TAG_HIT" },
+      "min": 1
+    },
+    {
+      "note": "write_exec_boundary 가 세션 밖 실행을 BLOCK 으로 판정",
+      "match": { "type": "verdict", "level": "BLOCK", "detector": "write_exec_boundary" },
+      "count": 1
+    },
+    {
+      "note": "BLOCK 판정은 이것 하나뿐 (다른 BLOCK 이 섞이지 않음)",
+      "match": { "type": "verdict", "level": "BLOCK" },
+      "count": 1
+    },
+    {
+      "note": "멱등성: 종료 요청(would_kill)은 한 번만",
+      "match": { "type": "action", "action": "would_kill" },
+      "count": 1
+    },
+    {
+      "note": "세션 안 실행이 없었으니 write_exec_boundary 의 SUSPECT 는 없어야 한다",
+      "match": { "type": "verdict", "level": "SUSPECT", "detector": "write_exec_boundary" },
+      "count": 0
+    }
+  ]
+}

@@ -125,7 +125,7 @@
   - 이유: 정리하는 코드가 없어 끝난 세션의 링크가 sessions/by-cgroup 에 쌓인다.
   - 반영: 세션 폴더 정리 시 같이 삭제
 - **에이전트는 사용자 네임스페이스 안 root(uid 0, 전체 capability)로 실행됨. 하드닝은 미적용**
-  - 이유: VM 확인 결과 id=0, CapEff=000001ffffffffff, 호스트 기준 uid 1000 (w2d1). 비root, capability 축소, no_new_privs는 일반 권장 사항이지만 v0.1에서는 환경 변수를 늘리지 않으려고 적용하지 않았다. 컨테이너 안 /tmp 는 root 소유 drwxrwxr-x 라서 비root 전환에는 rootfs 권한 정리와 uid_map 확장이 필요하다.
+  - 이유: VM 확인 결과 id=0, CapEff=000001ffffffffff, 호스트 기준 uid 1000 (w2d1). 비root, capability 축소, no_new_privs는 일반 권장 사항이지만 v0.1에서는 실험에서 바뀌는 조건을 늘리지 않으려고 적용하지 않았다. 컨테이너 안 /tmp 는 root 소유 drwxrwxr-x 라서 비root 전환에는 rootfs 권한 정리와 uid_map 확장이 필요하다.
   - 반영: 위협 모델 신뢰 가정에 명시. 탐지기가 선 뒤 별도 작업으로 cap 축소와 no_new_privs, 이어서 비root 전환을 시도하고 s00/s99 이벤트가 같은지 비교 (w3 이후, 선택)
 - **세션 kill은 세션 밖에서 일어난 실행을 멈추지 못함**
   - 이유: kill_session 은 세션 cgroup 안의 프로세스만 끊는다. 쓰기→실행 탐지기의 BLOCK 도 판정이 exec 이후에 나오므로 의미는 후속 행동 중단이다.

@@ -138,3 +138,6 @@
 - **에이전트가 쓴 파일이 exec 대상이 아니라 인터프리터의 인자나 설정으로 읽히는 실행은 탐지하지 못함**
   - 이유: security_bprm_check 가 exec 되는 파일의 신원만 write_tags 에서 조회한다. 같은 파일을 호스트에서 `sudo sh <파일>` 로 실행하면 TAG_HIT 이 생기지 않고 직접 실행하면 BLOCK 이 난다 (w2d3, sh 한 번 기준 VM 확인). python, node 같은 다른 인터프리터와 설정 파일 안의 명령은 같은 원리로 추정하며 직접 확인하지 않았다. 읽기 open 은 조회하지 않는다.
   - 반영: 위협 모델 4.3절 미탐 행에 추가, README 한계 섹션(w5). 읽기 open 조회(EVT_OPEN)는 오탐 측정 뒤 v0.2 이후에 검토
+- **러너가 run_container.sh 의 출력 형식과 이름 규칙에 의존함** (`run_scenarios.sh`)
+  - 이유: 러너는 agent-run 출력의 "[*] 세션 시작: <ID> (cgroup_id=...)" 줄에서 세션 ID 를 뽑고, host.sh 스텝은 컨테이너 폴더가 "mycontainer-<세션 ID 의 끝 숫자>" 라는 이름 규칙으로 upperdir 를 찾는다. 이 두 가정은 여러 세션에서 관찰로 확인했을 뿐 run_container.sh 코드로 확인하지 않았다. 형식이나 규칙이 바뀌면 세션 ID 를 얻지 못하거나 컨테이너 폴더를 찾지 못해 FAIL 로 끝난다 (fail-closed, w2d3).
+  - 반영: 출력 형식이 바뀌면 러너와 tools/mock 을 같이 고친다. 장기적으로는 agent-run 이 세션 ID 와 컨테이너 폴더를 명시적으로 출력하게 하는 것을 검토 (3주차 이후, 선택)

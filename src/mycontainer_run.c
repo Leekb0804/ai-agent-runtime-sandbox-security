@@ -41,6 +41,7 @@
 #include <bpf/bpf.h>
 
 #define STACK_SIZE (1024 * 1024)
+#define SESSION_CGROUPS_PIN "/sys/fs/bpf/session_cgroups"
 
 static void die(const char *msg) {
     fprintf(stderr, "[!] %s: %s\n", msg, strerror(errno));
@@ -423,14 +424,21 @@ int main(int argc, char *argv[]) {
     }
     __u64 cgroup_id = st.st_ino;
 
-    // 흠... 모든 컨테이너에 ebpf를 붙일거면 fd가 실패했을때 에러출력하고 종료되는게 맞는것 같은데 / 그게 아니라면 그냥 진행하고?
-    int bpf_fd = bpf_obj_get("/sys/fs/bpf/session_cgroups");
-    if (bpf_fd >= 0) {
-        __u8 dummy = 1;
-        int bpf_update_result =  bpf_map_update_elem(bpf_fd, &cgroup_id, &dummy, BPF_ANY);
-        if (bpf_update_result != 0) {
-            perror("bpf_fd fail");
-        }
+    /* ---------- 감시 등록 (fail-closed) ---------- */
+    /*
+     * 이 도구의 전제는 "세션은 감시 아래에서만 실행된다"이다. pin된 맵을 열지 못하거나
+     * 등록하지 못한 채 진행하면 감시 없이 에이전트가 도는데 사용자는 알 수 없으므로,
+     * 경고만 남기고 계속하지 않고 여기서 종료한다 (아직 clone 이전이라 되돌릴 자식이 없다).
+     * 로더(myc_loader)는 agent-run 보다 먼저 떠 있어야 한다.
+     */
+    int bpf_fd = bpf_obj_get(SESSION_CGROUPS_PIN);
+    if (bpf_fd < 0) {
+        die("감시 맵(" SESSION_CGROUPS_PIN ")을 열 수 없음 - myc_loader 를 먼저 실행했는지 확인");
+    }
+
+    __u8 dummy = 1;
+    if (bpf_map_update_elem(bpf_fd, &cgroup_id, &dummy, BPF_ANY) != 0) {
+        die("감시 맵에 세션 cgroup 등록 실패");
     }
 
     /* ---------- 매핑 기준 UID/GID 결정 (clone 이전에 미리 확인) ---------- */

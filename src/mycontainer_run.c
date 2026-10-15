@@ -39,6 +39,7 @@
 #include <sched.h>
 #include <fcntl.h>
 #include <bpf/bpf.h>
+#include "loader/loader_lock.h"
 
 #define STACK_SIZE (1024 * 1024)
 #define SESSION_CGROUPS_PIN "/sys/fs/bpf/session_cgroups"
@@ -411,6 +412,21 @@ int main(int argc, char *argv[]) {
     const char *cgroup_path = argv[3];
     const char *netns_name = argv[4];
     char **cmd_argv = &argv[5];
+
+    /* ---------- 로더 생존 확인 (fail-closed) ---------- */
+    /*
+     * 로더(myc_loader)가 꺼져 있으면 pin된 감시 맵이 남아 있어도 프로그램은 detach 되어 있어서,
+     * 맵 등록이 성공해도 감시 없이 세션이 돈다. 로더가 쥐고 있는 flock 잠금으로 생존을 확인하고,
+     * 없으면 clone 이전(되돌릴 것이 없는 시점)에 종료한다. 이 확인은 시작 시점에만 일어난다.
+     * 확인용 fd 는 myc_loader_alive 안에서 닫히므로 clone() 으로 컨테이너에 복제되지 않는다.
+     */
+    const char *lock_path = myc_loader_lock_path();
+    int loader_alive = myc_loader_alive(lock_path);
+    if (loader_alive == 0) {
+        fprintf(stderr, "[!] 감시 로더(myc_loader)가 실행 중이 아님 (잠금: %s) - 로더를 먼저 실행해야 함\n", lock_path);
+        exit(1);
+    }
+    if (loader_alive < 0) die("로더 생존 확인 실패");
 
     /* ---------- 관리자 프로세스 준비 작업 (기존 로직 유지) ---------- */
     join_cgroup(cgroup_path);

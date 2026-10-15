@@ -9,6 +9,7 @@ src/mycontainer_run
 src/test_dispatcher
 src/test_verdict_handler
 src/test_write_exec_boundary
+src/test_loader_lock
 
 # 로컬 전용 설정
 .claude/settings.local.json

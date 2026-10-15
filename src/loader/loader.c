@@ -40,6 +40,7 @@
 #include "jsonl.h"
 #include "session_log.h"
 #include "verdict_handler.h"
+#include "loader_lock.h"
 
 #define DEFAULT_SESSIONS_ROOT "/var/lib/mycontainer/sessions"
 
@@ -105,6 +106,18 @@ int main(int argc, char **argv)
     struct ring_buffer *rb = ring_buffer__new(
         bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
     if (!rb) return 1;
+
+    /*
+     * 준비 완료 표시: 후킹 연결과 ring buffer 생성이 끝난 뒤에 배타 잠금을 건다.
+     * agent-run 은 이 잠금이 쥐어져 있을 때만 세션을 시작한다. 잠금 fd 는 프로세스가 끝날 때까지
+     * 일부러 닫지 않는다 (정상 종료, 크래시, SIGKILL 어느 쪽이든 커널이 잠금을 푼다).
+     * 로더가 이미 떠 있으면 여기서 실패하고 종료한다.
+     */
+    int lock_fd = myc_loader_lock_acquire(myc_loader_lock_path());
+    if (lock_fd < 0) {
+        perror("[loader] 잠금 획득 실패 (이미 실행 중인 로더가 있는지 확인)");
+        return 1;
+    }
 
     fprintf(stderr, "[loader] ready (sessions root: %s)\n", root);
 

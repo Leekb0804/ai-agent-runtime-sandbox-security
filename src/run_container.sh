@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-# 소스가 바뀌었거나 바이너리가 없으면 재컴파일
-if [[ ! -x ./mycontainer_run || mycontainer_run.c -nt ./mycontainer_run ]]; then
+# 소스나 loader_lock.h 가 바뀌었거나 바이너리가 없으면 재컴파일
+if [[ ! -x ./mycontainer_run || mycontainer_run.c -nt ./mycontainer_run || loader/loader_lock.h -nt ./mycontainer_run ]]; then
     echo "[*] mycontainer_run.c 컴파일 중..."
     gcc -Wall -o mycontainer_run mycontainer_run.c -lbpf
 fi

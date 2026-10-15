@@ -62,10 +62,10 @@ static void join_cgroup(const char *cgroup_path) {
     snprintf(procs_file, sizeof(procs_file), "%s/cgroup.procs", cgroup_path);
 
     int fd = open(procs_file, O_WRONLY);
-    if (fd < 0) { perror("open cgroup.procs"); return; }
+    if (fd < 0) die("세션 cgroup 합류 실패 (cgroup.procs 열기)");
 
     ssize_t n = write(fd, pid_str, strlen(pid_str));
-    if (n != (ssize_t)strlen(pid_str)) { perror("write cgroup.procs"); }
+    if (n != (ssize_t)strlen(pid_str)) die("세션 cgroup 합류 실패 (cgroup.procs 쓰기)");
 
     close(fd);
 }

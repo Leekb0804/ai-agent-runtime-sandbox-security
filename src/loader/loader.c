@@ -86,6 +86,14 @@ int main(int argc, char **argv)
     /* 첫 번째 인자가 있으면 세션 폴더의 부모 경로로 쓴다. 테스트에서 다른 경로를 쓰려는 용도이다. */
     const char *root = (argc > 1) ? argv[1] : DEFAULT_SESSIONS_ROOT;
 
+    /* 탐지기 등록이 거부된 적이 있으면 감시 구성이 불완전하므로 시작하지 않는다 */
+    if (dispatcher_registration_errors() != 0) {
+        fprintf(stderr, "[loader] 탐지기 등록 오류 - 시작하지 않음\n");
+        return 1;
+    }
+    /* 어떤 탐지기가 켜져 있는지 시작할 때 한 번 출력한다 */
+    dispatcher_print_detectors(stderr);
+
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
 

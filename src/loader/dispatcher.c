@@ -32,6 +32,8 @@ static struct detector *g_detectors[MAX_DETECTORS];
 static int g_detector_count;
 static verdict_sink_fn g_sink;
 static void *g_sink_ctx;
+/* 등록 단계에서 거부된 탐지기 개수. 0 이 아니면 로더는 시작하지 않는다 */
+static int g_register_errors;
 
 /*
  * 탐지기 등록.
@@ -40,11 +42,41 @@ static void *g_sink_ctx;
  */
 void register_detector(struct detector *d)
 {
+    /* 이름이 없으면 판정과 로그에서 누가 냈는지 알 수 없으므로 거부한다 */
+    if (!d->name || !d->name[0]) {
+        fprintf(stderr, "[dispatcher] 이름이 없는 탐지기는 등록할 수 없음\n");
+        g_register_errors++;
+        return;
+    }
+
+    /* 같은 이름이 이미 있으면 거부한다 (판정과 로그에서 어느 탐지기인지 구분할 수 없게 되므로). 먼저 등록된 쪽이 남는다 */
+    for (int i = 0; i < g_detector_count; i++) {
+        if (strcmp(g_detectors[i]->name, d->name) == 0) {
+            fprintf(stderr, "[dispatcher] 같은 이름의 탐지기가 이미 등록됨, 거부: %s\n", d->name);
+            g_register_errors++;
+            return;
+        }
+    }
+
     if (g_detector_count >= MAX_DETECTORS) {
         fprintf(stderr, "[dispatcher] 탐지기가 너무 많음, 무시: %s\n", d->name);
         return;
     }
     g_detectors[g_detector_count++] = d;   /* 현재 개수 위치에 넣고 개수를 1 올림 (후위 증가) */
+}
+
+/* 등록 단계에서 거부된 탐지기 수. 로더가 main 시작 때 확인한다 */
+int dispatcher_registration_errors(void)
+{
+    return g_register_errors;
+}
+
+/* 등록된 탐지기 목록을 out 에 출력한다 (이름과 구독 종류 비트마스크) */
+void dispatcher_print_detectors(FILE *out)
+{
+    fprintf(out, "[dispatcher] 등록된 탐지기 %d개\n", g_detector_count);
+    for (int i = 0; i < g_detector_count; i++)
+        fprintf(out, "  - %s (kinds=0x%08x)\n", g_detectors[i]->name, g_detectors[i]->kinds);
 }
 
 void dispatcher_set_sink(verdict_sink_fn fn, void *ctx)
@@ -150,6 +182,7 @@ void dispatch_event(const void *data, size_t len)
 void dispatcher_reset_for_test(void)
 {
     g_detector_count = 0;
+    g_register_errors = 0;                 /* 새 전역 상태는 여기서도 되돌려야 테스트 사이에 새지 않는다 */
     g_sink = NULL;
     g_sink_ctx = NULL;
 }

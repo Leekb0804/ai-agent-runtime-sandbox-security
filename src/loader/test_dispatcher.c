@@ -294,6 +294,56 @@ static void test_error_isolation(void)
     CHECK(sink_count == 10, "정상 탐지기의 판정은 모두 전달됨");
 }
 
+/* ===================== 테스트: 탐지기 등록 검증 ===================== */
+static void test_register_validation(void)
+{
+    printf("[탐지기 등록 검증]\n");
+    dispatcher_reset_for_test();
+    reset_counters();
+
+    /* 같은 이름("dup")의 탐지기 둘과 이름이 다른 탐지기 하나. 모두 EXEC 를 구독한다 */
+    static struct detector p = { .name = "dup",  .kinds = KIND_BIT(EVT_EXEC), .on_event = on_exec_only };
+    static struct detector q = { .name = "dup",  .kinds = KIND_BIT(EVT_EXEC), .on_event = always_ok };
+    static struct detector r = { .name = "uniq", .kinds = KIND_BIT(EVT_EXEC), .on_event = on_write_only };   /* on_write_only 는 호출 횟수만 세므로 구독 종류와 무관하게 쓴다 */
+    p.err_streak = q.err_streak = r.err_streak = 0;
+    p.disabled = q.disabled = r.disabled = 0;
+    register_detector(&p);
+    register_detector(&q);                /* 이름 중복 -> 거부되어야 함 */
+    register_detector(&r);
+    dispatcher_set_sink(test_sink, NULL);
+
+    CHECK(dispatcher_registration_errors() == 1, "이름이 같은 탐지기는 거부되고 오류로 센다");
+
+    struct evt_exec e = make_exec("/bin/ls");
+    dispatch_event(&e, sizeof(e));
+    CHECK(calls_exec == 1, "먼저 등록된 탐지기는 그대로 호출됨");
+    CHECK(calls_good == 0, "거부된 탐지기는 호출되지 않음");
+    CHECK(calls_write == 1, "다른 이름의 탐지기는 정상 등록됨");
+
+    /* 목록 출력: 메모리 버퍼에 받아서 확인한다 */
+    char *buf = NULL;
+    size_t sz = 0;
+    FILE *f = open_memstream(&buf, &sz);
+    dispatcher_print_detectors(f);
+    fclose(f);
+    CHECK(strstr(buf, "2개") && strstr(buf, "dup") && strstr(buf, "uniq"),
+          "목록에 등록된 탐지기 둘이 출력됨");
+    free(buf);
+
+    /* reset 이 오류 개수도 지우는지 (지우지 않으면 다음 테스트로 새어 나간다) */
+    dispatcher_reset_for_test();
+    CHECK(dispatcher_registration_errors() == 0, "reset 이 등록 오류 개수를 지움");
+
+    /* 이름이 NULL 이거나 빈 탐지기 */
+    static struct detector n = { .name = NULL, .kinds = KIND_BIT(EVT_EXEC), .on_event = on_write_only };
+    static struct detector m = { .name = "",   .kinds = KIND_BIT(EVT_EXEC), .on_event = on_write_only };
+    register_detector(&n);
+    register_detector(&m);
+    CHECK(dispatcher_registration_errors() == 2, "이름이 NULL 이거나 빈 탐지기는 거부됨");
+
+    dispatcher_reset_for_test();          /* 다음 테스트로 오류가 새지 않게 되돌림 */
+}
+
 /* ===================== 테스트 4: JSON 이스케이프 ===================== */
 static void test_json_escape(void)
 {
@@ -346,6 +396,7 @@ int main(void)
     test_length_validation();
     test_tag_hit();
     test_error_isolation();
+    test_register_validation();
     test_json_escape();
 
     printf("\n%s (실패 %d)\n", failures ? "FAILED" : "ALL PASSED", failures);

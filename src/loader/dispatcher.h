@@ -17,6 +17,7 @@
 #ifndef DISPATCHER_H
 #define DISPATCHER_H
 
+#include <stdio.h>   /* FILE */
 #include "detector.h"
 
 /* 등록할 수 있는 탐지기의 최대 개수. 고정 크기 배열을 쓰므로 상한이 필요하다. */
@@ -69,5 +70,11 @@ const char *verdict_level_str(enum verdict_level level);
  * 테스트마다 깨끗한 상태에서 시작하려고 만든 함수이며, 실제 로더에서는 호출하지 않는다.
  */
 void dispatcher_reset_for_test(void);
+
+/* 등록 단계에서 거부된 탐지기 수. 0 이 아니면 로더는 시작하지 않는다 */
+int dispatcher_registration_errors(void);
+
+/* 등록된 탐지기 목록을 out 에 출력한다 */
+void dispatcher_print_detectors(FILE *out);
 
 #endif /* DISPATCHER_H */

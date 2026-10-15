@@ -344,6 +344,30 @@ static void test_register_validation(void)
     dispatcher_reset_for_test();          /* 다음 테스트로 오류가 새지 않게 되돌림 */
 }
 
+/* ===================== 테스트: 탐지기 개수 상한 ===================== */
+static void test_register_overflow(void)
+{
+    printf("[탐지기 개수 상한]\n");
+    dispatcher_reset_for_test();
+    reset_counters();
+
+    /* 상한보다 하나 많은 탐지기를 서로 다른 이름으로 만든다. 모두 EXEC 를 구독하고 호출 횟수만 센다 */
+    static struct detector many[MAX_DETECTORS + 1];
+    static char names[MAX_DETECTORS + 1][16];
+    for (int i = 0; i < MAX_DETECTORS + 1; i++) {
+        snprintf(names[i], sizeof(names[i]), "det%d", i);
+        many[i] = (struct detector){ .name = names[i], .kinds = KIND_BIT(EVT_EXEC), .on_event = on_write_only };
+        register_detector(&many[i]);
+    }
+    CHECK(dispatcher_registration_errors() == 1, "상한을 넘긴 탐지기는 거부되고 오류로 센다");
+
+    struct evt_exec e = make_exec("/bin/ls");
+    dispatch_event(&e, sizeof(e));
+    CHECK(calls_write == MAX_DETECTORS, "상한 안의 탐지기는 모두 호출되고 넘친 하나는 호출되지 않음");
+
+    dispatcher_reset_for_test();          /* 다음 테스트로 오류가 새지 않게 되돌림 */
+}
+
 /* ===================== 테스트 4: JSON 이스케이프 ===================== */
 static void test_json_escape(void)
 {
@@ -397,6 +421,7 @@ int main(void)
     test_tag_hit();
     test_error_isolation();
     test_register_validation();
+    test_register_overflow();
     test_json_escape();
 
     printf("\n%s (실패 %d)\n", failures ? "FAILED" : "ALL PASSED", failures);

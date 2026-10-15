@@ -59,7 +59,8 @@ void register_detector(struct detector *d)
     }
 
     if (g_detector_count >= MAX_DETECTORS) {
-        fprintf(stderr, "[dispatcher] 탐지기가 너무 많음, 무시: %s\n", d->name);
+        fprintf(stderr, "[dispatcher] 탐지기가 너무 많음 (최대 %d개), 거부: %s\n", (int)MAX_DETECTORS, d->name);
+        g_register_errors++;
         return;
     }
     g_detectors[g_detector_count++] = d;   /* 현재 개수 위치에 넣고 개수를 1 올림 (후위 증가) */

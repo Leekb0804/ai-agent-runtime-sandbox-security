@@ -68,4 +68,14 @@ struct evt_tag_hit {
     char filename[MAX_FILENAME];   /* bprm->filename (exec 요청 경로). 길면 잘림 */
 };
 
+/*
+ * ring buffer 예약 실패(가득 참)로 버려진 이벤트를 세는 칸의 번호.
+ * 커널 쪽 drop_counts 맵의 key 이자 로더가 출력할 때 쓰는 번호이다.
+ */
+enum drop_kind {
+    DROP_EXEC    = 0,   /* EVT_EXEC 이벤트 */
+    DROP_TAG_HIT = 1,   /* EVT_TAG_HIT 이벤트 */
+    DROP_KIND_MAX       /* 개수 (맵의 max_entries 와 같다) */
+};
+
 #endif /* EVENT_H */

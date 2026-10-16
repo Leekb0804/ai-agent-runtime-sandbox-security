@@ -33,6 +33,8 @@
 #include <signal.h>
 #include <linux/types.h>         /* event.h 의 __u32/__u64 제공. event.h 보다 먼저 include! */
 #include <bpf/libbpf.h>          /* ring_buffer__*, bpf_map__fd */
+#include <bpf/bpf.h>             /* bpf_map_lookup_elem */
+#include <stdlib.h>              /* calloc, free */
 #include "watcher.skel.h"        /* bpftool 이 생성한 skeleton */
 #include "bpf/event.h"
 #include "detector.h"
@@ -79,6 +81,36 @@ static int handle_event(void *ctx, void *data, size_t len)
 
     dispatch_event(data, len);    /* 탐지기에게 분배. 판정이 나오면 handle_verdict 가 호출됨 */
     return 0;
+}
+
+/*
+ * 커널 쪽에서 ring buffer 가 가득 차서 버려진 이벤트 수를 읽어 한 줄로 알린다.
+ * drop_counts 는 CPU 마다 따로 센 값을 담고 있어서, CPU 개수만큼 읽어 합친다.
+ * 읽지 못하면 0 으로 보이지 않게 "확인 실패"로 출력한다 (0 과 모름을 구분하기 위해).
+ */
+static void report_drops(struct watcher_bpf *skel)
+{
+    int ncpu = libbpf_num_possible_cpus();                       /* 가능한 CPU 개수 */
+    __u64 *vals = (ncpu > 0) ? calloc((size_t)ncpu, sizeof(__u64)) : NULL;   /* CPU별 값을 받을 배열 */
+    __u64 sum[DROP_KIND_MAX] = {0};                              /* 종류별 합계 */
+    int ok = (vals != NULL);
+
+    for (__u32 k = 0; ok && k < DROP_KIND_MAX; k++) {
+        /* percpu 맵은 key 하나를 읽으면 CPU 개수만큼의 값이 한꺼번에 vals 에 채워진다 */
+        if (bpf_map_lookup_elem(bpf_map__fd(skel->maps.drop_counts), &k, vals) != 0) {
+            ok = 0;
+            break;
+        }
+        for (int i = 0; i < ncpu; i++)
+            sum[k] += vals[i];
+    }
+
+    if (ok)
+        fprintf(stderr, "[loader] ring buffer drops: exec=%llu tag_hit=%llu\n",
+                (unsigned long long)sum[DROP_EXEC], (unsigned long long)sum[DROP_TAG_HIT]);
+    else
+        fprintf(stderr, "[loader] ring buffer drops: 확인 실패\n");
+    free(vals);
 }
 
 int main(int argc, char **argv)
@@ -140,6 +172,7 @@ int main(int argc, char **argv)
     const struct session_log_stats *st = session_log_get_stats();
     fprintf(stderr, "[loader] log stats: writes=%lu slow(>5ms)=%lu max=%lluus lost=%lu\n",
             st->writes, st->slow_writes, st->max_ns / 1000ULL, st->lost);
+    report_drops(skel);
 
     /* 루프를 빠져나온 뒤의 일반 코드 흐름이므로 정리 함수를 호출해도 안전하다 */
     ring_buffer__free(rb);

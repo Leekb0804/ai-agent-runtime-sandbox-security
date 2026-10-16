@@ -44,6 +44,33 @@ struct {
 } events SEC(".maps");
 
 /*
+ * ring buffer 가 가득 차서 버려진 이벤트 수.
+ *   key : enum drop_kind (event.h)
+ * PERCPU_ARRAY 는 CPU 마다 따로 센다. 서로 경쟁하지 않아 원자 연산이 필요 없고,
+ * 로더가 읽을 때 CPU별 값을 합친다.
+ *
+ * 설계 결정 (w3d2):
+ *   우선한 것: 커널 쪽 갱신 경로를 CPU 사이에 공유되는 것이 없는 가장 단순한 형태로 두는 것.
+ *   포기한 것: 읽는 쪽(로더)의 단순함. CPU 개수 조회, 배열 할당, 합산이 필요하고 단위 테스트가 어렵다.
+ *   대안: 일반 ARRAY + __sync_fetch_and_add. 정확하고 읽기가 더 단순하다.
+ *         드롭은 bpf_ringbuf_reserve 의 잠금 직후에 일어나서 경합을 피하는 이점은 작다.
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, DROP_KIND_MAX);
+    __type(key, __u32);
+    __type(value, __u64);
+} drop_counts SEC(".maps");
+
+/* 버려진 이벤트를 센다. 맵 조회가 실패하면(일어나지 않아야 함) 센 것을 잃는다. */
+static __always_inline void count_drop(__u32 which)
+{
+    __u64 *v = bpf_map_lookup_elem(&drop_counts, &which);
+    if (v)
+        (*v)++;
+}
+
+/*
  * execve 시스템콜 진입 시점에 호출되는 tracepoint 프로그램.
  * (프로그램이 "attach"되면 이 이벤트가 발생할 때마다 커널이 이 함수를 호출한다)
  * ctx->args[0] 은 execve의 첫 인자(실행할 파일 경로, 유저 메모리 포인터).
@@ -60,8 +87,10 @@ int on_execve(struct trace_event_raw_sys_enter *ctx)
 
     /* ring buffer에 이벤트 한 개 분량을 예약. 실패(가득 참)하면 이벤트를 버린다. */
     struct evt_exec *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        count_drop(DROP_EXEC);   /* 가득 차서 버려짐: 센다 */
         return 0;
+    }
 
     /* 공통 헤더 채우기 */
     e->hdr.kind = EVT_EXEC;

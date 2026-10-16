@@ -27,10 +27,12 @@ int BPF_PROG(on_bprm_check, struct linux_binprm *bprm)
     if (!t)
         return 0;
 
-    /* 이벤트 한 개 분량 예약. 가득 차면 이 히트는 유실된다 (기존 exec 이벤트와 같은 한계) */
+    /* 이벤트 한 개 분량 예약. 가득 차면 이 히트는 유실된다 (drop_counts 로 센다) */
     struct evt_tag_hit *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e)
+    if (!e) {
+        count_drop(DROP_TAG_HIT);   /* 가득 차서 버려짐: 센다 */
         return 0;
+    }
 
     /* 헤더: cgroup_id 는 태그 소유 세션, pid 는 exec 한 프로세스 (event.h 의 예외 규칙) */
     e->hdr.kind = EVT_TAG_HIT;

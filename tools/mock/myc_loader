@@ -4,9 +4,15 @@
 #
 # 진짜 로더와 같은 약속만 지킨다.
 #   - 준비되면 stderr 에 "[loader] ready ..." 를 낸다
-#   - SIGTERM 이나 SIGINT 를 받으면 "[loader] log stats: ... lost=N" 를 내고 종료한다
+#   - SIGTERM 이나 SIGINT 를 받으면 "[loader] log stats: ... lost=N" 를 내고,
+#     이어서 "[loader] ring buffer drops: exec=N tag_hit=M" 를 낸 뒤 종료한다 (src/loader/loader.c 의 report_drops 와 같은 형식)
 # MOCK_MODE=noready : 준비되지 못하고 바로 죽는 로더 (러너가 시작을 거부하는지 확인)
 # MOCK_LOST=N       : 종료 시 lost=N 을 보고하는 로더 (러너의 인프라 검증이 잡아내는지 확인)
+# MOCK_DROPS_EXEC=N : 종료 시 exec 드롭을 N 으로 보고 (기본 0)
+# MOCK_DROPS_TAG=N  : 종료 시 tag_hit 드롭을 N 으로 보고 (기본 0)
+# MOCK_DROPS=fail   : 드롭 줄을 "확인 실패" 로 낸다 (로더가 드롭 맵을 읽지 못한 경우를 흉내냄)
+# MOCK_DROPS=none   : 드롭 줄을 아예 내지 않는다 (드롭을 출력하지 않는 옛 로더를 흉내냄)
+# MOCK_DROPS=garbage: 드롭 줄은 내지만 "확인 실패" 도 exec=/tag_hit= 숫자도 없다 (줄 형식이 바뀐 경우를 흉내냄)
 
 # $1 : 첫 번째 인자 = 세션 루트 (러너가 임시 폴더 경로를 넘겨 준다). 진짜 로더도 같은 인자를 받는다.
 # 이 가짜 로더는 값을 출력에만 쓴다. ${1:-} 는 인자가 없으면 빈 문자열이라는 뜻이다.
@@ -19,11 +25,28 @@ if [[ "${MOCK_MODE:-}" == "noready" ]]; then
     exit 1
 fi
 
-# trap '명령' TERM INT : SIGTERM (러너가 보내는 종료 요청)이나 SIGINT (Ctrl+C)를 받으면 작은따옴표 안의 명령을 실행한다.
-# 여기서는 진짜 로더처럼 log stats 줄을 stderr 로 내고 정상 종료(0)한다.
-# ${MOCK_LOST:-0} : 환경변수가 없으면 0. 작은따옴표 안이라서 신호를 받는 시점에 값으로 바뀐다.
-# loader.c 의 on_sig 와 같은 역할이지만, 쉘에서는 trap 한 줄이면 된다.
-trap 'echo "[loader] log stats: writes=0 slow(>5ms)=0 max=0us lost=${MOCK_LOST:-0}" >&2; exit 0' TERM INT
+# 종료 신호를 받았을 때 실행할 함수. 진짜 로더처럼 log stats 줄과 ring buffer drops 줄을 stderr 로 내고 정상 종료(0)한다.
+# 함수 안의 ${변수:-기본값} 은 신호를 받아 이 함수가 실행되는 시점에 값으로 바뀐다.
+on_term() {
+    # log stats 줄을 낸다. ${MOCK_LOST:-0} : 환경변수가 없으면 0.
+    echo "[loader] log stats: writes=0 slow(>5ms)=0 max=0us lost=${MOCK_LOST:-0}" >&2
+    # case 값 in 패턴) ... ;; esac : 값이 어느 패턴과 맞는지에 따라 갈라진다. MOCK_DROPS 가 없으면 빈 문자열로 본다.
+    case "${MOCK_DROPS:-}" in
+        # none : 드롭 줄을 내지 않는다. : 는 아무 일도 하지 않는 명령이다.
+        none) : ;;
+        # fail : 진짜 로더가 드롭 맵을 읽지 못했을 때 내는 줄 (loader.c:112 와 같은 문구).
+        fail) echo "[loader] ring buffer drops: 확인 실패" >&2 ;;
+        # garbage : 'ring buffer drops' 는 들어 있지만 러너가 숫자를 뽑을 수 없는 줄.
+        garbage) echo "[loader] ring buffer drops: 알 수 없음" >&2 ;;
+        # 그 밖 (기본) : 진짜 로더가 읽기에 성공했을 때 내는 줄 (loader.c:109 와 같은 형식). 값이 없으면 0.
+        *) echo "[loader] ring buffer drops: exec=${MOCK_DROPS_EXEC:-0} tag_hit=${MOCK_DROPS_TAG:-0}" >&2 ;;
+    esac
+    # 정상 종료(0)한다.
+    exit 0
+}
+# trap '명령' TERM INT : SIGTERM (러너가 보내는 종료 요청)이나 SIGINT (Ctrl+C)를 받으면 작은따옴표 안의 명령(on_term)을 실행한다.
+# loader.c 의 on_sig 와 그 뒤 종료 처리를 합친 역할이다.
+trap 'on_term' TERM INT
 
 # 준비 메시지. >&2 로 stderr 에 낸다. 러너가 loader.err 파일에서 이 줄을 찾는다.
 echo "[loader] ready (sessions root: $root)" >&2

@@ -82,6 +82,8 @@ echo "[정상 흐름]"
 check "가짜 로그가 기대와 맞으면 전체 통과 (종료 코드 0)" 0 MOCK_MODE=normal
 expect_text "요약에 2개 모두 통과로 표시" "시나리오 2/2 통과"
 expect_text "인프라 검증도 통과" "로그 유실 없음"
+# 가짜 로더는 기본으로 exec=0 tag_hit=0 을 보고한다. 드롭 검사의 PASS 경로가 실제로 출력되는지 확인한다.
+expect_text "ring buffer 드롭 검사도 통과" "[PASS] ring buffer 드롭 없음"
 
 echo "[실패를 잡아내는가]"
 check "로그가 기대와 다르면 FAIL (종료 코드 1)" 1 MOCK_MODE=wrong
@@ -96,6 +98,21 @@ expect_text "by-cgroup 링크를 의심하라고 안내" "by-cgroup 링크 생�
 # MOCK_LOST=3 : 가짜 로더(tools/mock/myc_loader)가 종료할 때 lost=3 을 보고하게 한다.
 check "로더가 로그를 잃었다고 보고하면 FAIL" 1 MOCK_LOST=3
 expect_text "lost 값을 보여 줌" "lost=3"
+# MOCK_DROPS_EXEC=5 : 가짜 로더가 종료할 때 exec 드롭 5개를 보고하게 한다 (tag_hit 은 기본 0).
+check "로더가 exec 이벤트를 버렸다고 보고하면 FAIL" 1 MOCK_DROPS_EXEC=5
+expect_text "exec 드롭 수를 보여 줌" "[FAIL] ring buffer 드롭 확인: exec=5 tag_hit=0"
+# MOCK_DROPS_TAG=2 : exec 는 0 이고 tag_hit 드롭만 2개. tag_hit 값도 읽는지 확인한다.
+check "로더가 tag_hit 이벤트를 버렸다고 보고하면 FAIL" 1 MOCK_DROPS_TAG=2
+expect_text "tag_hit 드롭 수를 보여 줌" "[FAIL] ring buffer 드롭 확인: exec=0 tag_hit=2"
+# MOCK_DROPS=fail : 가짜 로더가 드롭 수 대신 "확인 실패" 를 낸다. 숫자가 없다고 0 으로 보면 안 된다.
+check "로더가 드롭 수를 읽지 못했으면 FAIL" 1 MOCK_DROPS=fail
+expect_text "읽기 실패를 알려 줌" "[FAIL] ring buffer 드롭 확인: 로더가 드롭 수를 읽지 못했다 (확인 실패)"
+# MOCK_DROPS=none : 가짜 로더가 드롭 줄을 아예 내지 않는다. 줄이 없다고 통과로 보면 안 된다.
+check "드롭 줄이 없으면 FAIL" 1 MOCK_DROPS=none
+expect_text "드롭 줄이 없음을 알려 줌" "[FAIL] ring buffer 드롭 확인: 드롭 줄을 찾지 못했다"
+# MOCK_DROPS=garbage : 드롭 줄은 있지만 숫자를 뽑을 수 없다. 형식이 바뀐 줄을 통과로 보면 안 된다.
+check "드롭 줄의 값을 해석하지 못하면 FAIL" 1 MOCK_DROPS=garbage
+expect_text "해석 실패를 알려 줌" "[FAIL] ring buffer 드롭 확인: exec= 또는 tag_hit= 값을 해석하지 못했다"
 
 echo "[기다리는가]"
 # slow 모드의 가짜 agent-run 은 바로 종료하고 로그는 그 뒤에도 0.3초 간격으로 계속 써진다.

@@ -21,7 +21,7 @@
 #   2. 임시 폴더를 만들고, 그 안을 세션 루트로 쓰는 "러너 전용 로더"를 띄운다
 #      (개발 중에 쓰는 로그 폴더 /var/lib/mycontainer/sessions 를 더럽히지 않으려고 분리한다)
 #   3. 시나리오마다: agent-run 실행 -> 세션 ID 추출 -> 로더가 다 쓸 때까지 대기 -> 판정
-#   4. 로더를 종료하고 인프라 검증 (로그 유실 0, _unattributed 비어 있음)
+#   4. 로더를 종료하고 인프라 검증 (로그 유실 0, ring buffer 드롭 0, _unattributed 비어 있음)
 #   5. 요약 출력. 하나라도 실패하면 종료 코드 1
 #
 # ===== 종료 코드 =====
@@ -31,7 +31,8 @@
 #
 # ===== 알려진 한계 =====
 #   - 세션 ID 는 agent-run 이 출력하는 "[*] 세션 시작: <ID> ..." 줄에서 뽑는다. 그 출력 형식이 바뀌면 깨진다.
-#   - ring buffer 에서 이벤트가 유실돼도 센 값이 없어서 알 수 없다 (드롭 카운터는 2주차 예정).
+#   - ring buffer 드롭 수는 로더가 종료할 때 실행 전체 합계로 한 번만 출력한다. 러너는 로더를 끈 뒤 그 줄을 읽어 확인하므로,
+#     드롭이 있으면 실행 전체를 실패로 보지만 어느 시나리오에서 버려졌는지는 알 수 없다.
 #   - 시나리오 하나당 컨테이너를 새로 띄우므로 느리다 (개수가 적은 v0.1 에서는 문제없다).
 
 # ===== 이 파일을 읽는 방법 (쉘 문법이 낯설다면) =====
@@ -374,7 +375,7 @@ LOADER_PID=""
 ANY_FAIL=0
 
 # kill -0 PID  : 신호를 보내지 않고 "그 프로세스가 살아 있는지"만 확인한다.
-# kill -TERM PID : 종료를 요청한다 (SIGTERM). 로더는 종료할 때 log stats 한 줄을 남긴다.
+# kill -TERM PID : 종료를 요청한다 (SIGTERM). 로더는 종료할 때 log stats 한 줄과 ring buffer drops 한 줄을 남긴다.
 # wait PID     : 그 백그라운드 프로세스가 끝날 때까지 기다린다.
 stop_loader() {
     if [[ -n "$LOADER_PID" ]] && kill -0 "$LOADER_PID" 2>/dev/null; then
@@ -405,7 +406,7 @@ trap cleanup EXIT
 # 러너 전용 로더를 띄운다. 세션 루트를 인자로 넘겨서 개발용 로그 폴더와 분리한다.
 # 명령 끝의 & : 백그라운드로 실행한다 (끝나기를 기다리지 않고 다음 줄로 넘어간다). 로더는 계속 떠 있어야 하기 때문이다.
 # "$SESS_ROOT" 는 로더에게 주는 인자 (세션 루트). >파일 은 표준 출력, 2>파일 은 오류 출력(stderr)을 따로 저장한다.
-# 로더의 "ready" 와 "log stats" 는 stderr 로 나온다.
+# 로더의 "ready" 와 "log stats", "ring buffer drops" 는 stderr 로 나온다.
 # 바로 다음 줄의 $! 는 방금 백그라운드로 시작한 프로세스의 번호(PID)이다.
 "$SRC_DIR/myc_loader" "$SESS_ROOT" >"$WORK/loader.out" 2>"$WORK/loader.err" &
 LOADER_PID=$!
@@ -471,7 +472,7 @@ fi
 # ---------------------------------------------------------------------------------------------
 # 인프라 검증. 시나리오 판정과 별개로, 로그 시스템 자체가 건강했는지 본다.
 # ---------------------------------------------------------------------------------------------
-stop_loader      # 종료 시 로더가 log stats 한 줄을 stderr 로 남긴다
+stop_loader      # 종료 시 로더가 log stats 한 줄과 ring buffer drops 한 줄을 stderr 로 남긴다
 
 infra_fail=0
 echo
@@ -493,6 +494,45 @@ elif [[ "$lost" -ne 0 ]]; then
 else
     # ${stats_line#\[loader\] } : 변수 값의 앞쪽에서 "[loader] " 를 떼어낸 나머지.
     echo "[PASS] 로그 유실 없음  (${stats_line#\[loader\] })"
+fi
+
+# 3) ring buffer 드롭 확인: 버퍼가 가득 차서 커널이 버린 이벤트가 없었는가 (로더의 ring buffer drops 줄에서 읽는다)
+# 이벤트가 버려지면 판정기의 "기대 정확히 0개" 검사가 거짓 PASS 가 될 수 있어서, 하나라도 버려졌으면 실패로 본다.
+# 줄이 없거나 로더가 값을 읽지 못했어도 0 으로 여기지 않고 실패로 본다 (모르는 것을 0 으로 보지 않는다, fail-closed).
+# 'ring buffer drops' 가 들어간 줄들 중 마지막 줄만 고른다. 그런 줄이 없으면 빈 문자열이 된다.
+drops_line="$(grep 'ring buffer drops' "$WORK/loader.err" | tail -1)"
+# 그 줄에서 exec= 뒤의 숫자만 뽑는다. 숫자가 없으면 (확인 실패 줄 등) 빈 문자열이 된다.
+drop_exec="$(sed -n 's/.*exec=\([0-9][0-9]*\).*/\1/p' <<<"$drops_line")"
+# 같은 줄에서 tag_hit= 뒤의 숫자만 뽑는다. 숫자가 없으면 빈 문자열이 된다.
+drop_tag="$(sed -n 's/.*tag_hit=\([0-9][0-9]*\).*/\1/p' <<<"$drops_line")"
+# 줄 자체가 없으면 (로더가 정상 종료하지 못했거나 드롭을 출력하지 않는 로더) 확인할 수 없으므로 실패로 본다.
+if [[ -z "$drops_line" ]]; then
+    # 실패 이유를 출력한다.
+    echo "[FAIL] ring buffer 드롭 확인: 드롭 줄을 찾지 못했다"
+    # 인프라 검증 실패로 표시한다.
+    infra_fail=1
+# == *"확인 실패"* : 줄 어딘가에 "확인 실패" 가 들어 있으면 참이다 (로더가 드롭 맵을 읽지 못했다는 뜻).
+elif [[ "$drops_line" == *"확인 실패"* ]]; then
+    # 실패 이유를 출력한다.
+    echo "[FAIL] ring buffer 드롭 확인: 로더가 드롭 수를 읽지 못했다 (확인 실패)"
+    # 인프라 검증 실패로 표시한다.
+    infra_fail=1
+# 두 값 중 하나라도 비었으면 줄 형식이 바뀐 것이다 (|| 는 "또는"). 숫자를 모르므로 실패로 본다.
+elif [[ -z "$drop_exec" || -z "$drop_tag" ]]; then
+    # 실패 이유를 출력한다.
+    echo "[FAIL] ring buffer 드롭 확인: exec= 또는 tag_hit= 값을 해석하지 못했다"
+    # 인프라 검증 실패로 표시한다.
+    infra_fail=1
+# -ne 0 : 0 이 아니면 참. 둘 중 하나라도 0 이 아니면 이벤트가 버려진 것이다.
+elif [[ "$drop_exec" -ne 0 || "$drop_tag" -ne 0 ]]; then
+    # 버려진 개수를 함께 출력한다.
+    echo "[FAIL] ring buffer 드롭 확인: exec=$drop_exec tag_hit=$drop_tag (이벤트가 버려져 PASS 를 믿을 수 없다)"
+    # 인프라 검증 실패로 표시한다.
+    infra_fail=1
+# 위 조건에 모두 걸리지 않았으면 두 값이 모두 0 이다.
+else
+    # 통과를 출력한다. 값은 0 이지만 읽은 값을 그대로 보여 준다.
+    echo "[PASS] ring buffer 드롭 없음 (exec=$drop_exec tag_hit=$drop_tag)"
 fi
 
 # 2) 세션을 못 찾아 _unattributed 로 간 기록이 없는가 (있으면 by-cgroup 링크가 안 만들어진 것)

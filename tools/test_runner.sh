@@ -39,8 +39,18 @@ OUT="$(mktemp)"
 # trap '명령' EXIT : 스크립트가 어떻게 끝나든 마지막에 그 명령을 실행한다. 여기서는 임시 파일을 지운다.
 trap 'rm -f "$OUT"; rm -rf "$SCEN" "$CONT"' EXIT
 
+# 러너 출력(OUT 파일)에 "결과: FAILED" 줄이 있는지 확인한다. 있으면 참(0), 없으면 거짓(1)을 돌려준다.
+# 러너가 종료 코드 1 로 끝나는 exit 는 run_scenarios.sh 맨 끝 한 곳뿐이고 그 바로 앞에서 이 줄을 낸다.
+# 그래서 종료 코드가 1 인데 이 줄이 없으면, 검사가 실패를 잡은 것이 아니라 러너가 중간에 중단된 것이다
+# (set -u 의 unbound variable 오류처럼 bash 가 스스로 1 로 끝내는 경우).
+has_failed_result() {
+    # -q 출력 없이 있는지만, -F 글자 그대로, -- 뒤는 찾을 문자열. grep 의 종료 코드가 이 함수의 결과가 된다.
+    grep -qF -- "결과: FAILED" "$OUT"
+}
+
 # 가짜 구현으로 러너를 실행하고 종료 코드를 확인한다.
 #   check "<설명>" <기대 종료 코드> [환경변수=값 ...]
+# 기대 코드가 1 이면 결과 줄("결과: FAILED")도 있어야 통과한다 (러너 중단과 정상 실패를 구분하려는 것).
 # 러너 출력에 반드시 들어 있어야 하는 문구는 직후에 expect_text 로 확인한다.
 check() {
     local msg="$1" want="$2" got
@@ -52,13 +62,22 @@ check() {
     # 출력과 오류 출력은 모두 OUT 파일에 모은다 (>"$OUT" 2>&1). 바로 다음 줄에서 종료 코드를 got 에 저장한다.
     env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MYC_CONTAINERS_ROOT="$CONT" "$@" "$RUNNER" >"$OUT" 2>&1
     got=$?
-    # 러너의 종료 코드가 기대와 같은지 비교한다.
-    if [[ "$got" == "$want" ]]; then
-        printf '  PASS  %s\n' "$msg"
-    else
+    # 러너의 종료 코드가 기대와 다르면 실패.
+    if [[ "$got" != "$want" ]]; then
         printf '  FAIL  %s (기대 종료 코드 %s, 실제 %s)\n' "$msg" "$want" "$got"
         sed 's/^/        /' "$OUT"
         failures=$((failures + 1))
+    # 종료 코드는 1 로 같지만 결과 줄이 없으면 실패. ! 는 함수의 결과(참/거짓)를 뒤집는다.
+    elif [[ "$want" == 1 ]] && ! has_failed_result; then
+        # 왜 실패인지 알려 준다. 종료 코드만 보면 통과처럼 보이는 경우라서 문구를 따로 둔다.
+        printf '  FAIL  %s (종료 코드는 1 이지만 "결과: FAILED" 가 없음 - 러너가 중간에 중단됐을 수 있음)\n' "$msg"
+        # 러너 출력을 들여써서 보여 준다 (중단 지점과 오류 메시지를 확인하려고).
+        sed 's/^/        /' "$OUT"
+        # 실패 개수를 하나 늘린다.
+        failures=$((failures + 1))
+    # 위 두 경우가 아니면 통과.
+    else
+        printf '  PASS  %s\n' "$msg"
     fi
 }
 
@@ -134,10 +153,11 @@ make_host_scn() {
 make_host_scn 'exit 3'
 env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MYC_CONTAINERS_ROOT="$CONT" MOCK_MODE=normal "$RUNNER" --only 's_host' >"$OUT" 2>&1
 got=$?
-if [[ $got -eq 1 ]] && grep -qF "호스트 스텝(host.sh)이 실패했다. 종료 코드 3" "$OUT"; then
+# 종료 코드 1, 호스트 스텝 실패 문구, 그리고 결과 줄(has_failed_result: 러너가 끝까지 실행됐는지)을 모두 확인한다.
+if [[ $got -eq 1 ]] && grep -qF "호스트 스텝(host.sh)이 실패했다. 종료 코드 3" "$OUT" && has_failed_result; then
     echo "  PASS  host.sh 가 실패하면 종료 코드를 알려 주고 FAIL"
 else
-    echo "  FAIL  host.sh 실패를 잡지 못함 (종료 코드 $got)"; sed 's/^/        /' "$OUT"; failures=$((failures + 1))
+    echo "  FAIL  host.sh 실패를 잡지 못함 (종료 코드 $got, 문구나 \"결과: FAILED\" 줄이 없을 수 있음)"; sed 's/^/        /' "$OUT"; failures=$((failures + 1))
 fi
 # 케이스 2: host.sh 가 컨테이너 폴더(MYC_UPPER)를 받고 그 안에 표시 파일을 남기면, 호스트 스텝이 컨테이너 폴더에서 실행된 것이다.
 # 호스트 스텝 뒤에 이벤트가 늘지 않으므로 러너는 그 사실을 호스트 스텝 출력에 남기고 판정으로 넘어가 통과(s00 기대)한다.
@@ -155,10 +175,11 @@ fi
 make_host_scn 'exit 0'
 env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MYC_CONTAINERS_ROOT="$CONT" MOCK_NO_CONTAINER=1 MOCK_MODE=normal "$RUNNER" --only 's_host' >"$OUT" 2>&1
 got=$?
-if [[ $got -eq 1 ]] && grep -qF "컨테이너 폴더를 찾지 못함" "$OUT"; then
+# 종료 코드 1, 컨테이너 폴더 없음 문구, 그리고 결과 줄(has_failed_result: 러너가 끝까지 실행됐는지)을 모두 확인한다.
+if [[ $got -eq 1 ]] && grep -qF "컨테이너 폴더를 찾지 못함" "$OUT" && has_failed_result; then
     echo "  PASS  컨테이너 폴더가 없으면 host.sh 를 실행하지 않고 FAIL"
 else
-    echo "  FAIL  컨테이너 폴더가 없는 경우를 잡지 못함 (종료 코드 $got)"; sed 's/^/        /' "$OUT"; failures=$((failures + 1))
+    echo "  FAIL  컨테이너 폴더가 없는 경우를 잡지 못함 (종료 코드 $got, 문구나 \"결과: FAILED\" 줄이 없을 수 있음)"; sed 's/^/        /' "$OUT"; failures=$((failures + 1))
 fi
 rm -rf "$SCEN/s_host"
 echo

@@ -562,6 +562,7 @@ fi
 
 # 마지막: 실패가 하나라도 있었으면 종료 코드 1, 아니면 0 이다. 이 값을 다른 스크립트나 CI 가 읽는다.
 # (exit 가 실행된 뒤에도 EXIT 트랩이 마지막으로 cleanup 을 실행한다.)
+# "결과:" 줄은 test_runner 가 '끝까지 실행됨'의 표지로 쓴다. 문구를 바꾸면 test_runner 도 고쳐야 한다.
 if [[ $ANY_FAIL -eq 1 ]]; then
     echo "결과: FAILED"
     exit 1

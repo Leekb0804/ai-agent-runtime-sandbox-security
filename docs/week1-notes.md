@@ -69,6 +69,11 @@
   - 이유: `bpf_ktime_get_ns()`는 CLOCK_MONOTONIC 기준이라, 세션 시작/종료 시각과 바로 비교할 수 없다.
   - 시점: w5
   - 해결: (미해결)
+- [ ] **더미 탐지기(dummy_block, dummy_suspect)가 운영 로더에서 같이 돎**
+  - 이유: dummy_suspect 는 모든 EXEC 를 SUSPECT 로 판정해 오탐 측정에 노이즈가 되고, dummy_block 은 /tmp/trigger 를 exec 하면 실제 kill 을 일으킨다.
+  - 비고: 로더에 탐지기 선택 옵션을 둔다 (기본은 write_exec_boundary 만, 더미는 러너가 켠다). 관찰 모드(--no-kill) 결정과 같은 로더 옵션 설계이므로 함께 정한다. argv[1](세션 루트) 호환 유지.
+  - 시점: w3
+  - 해결: (미해결)
 
 ### 세션 대응과 kill switch
 
@@ -89,8 +94,37 @@
   - 해결: (미해결)
 - [ ] **세션 도중 로더가 죽어도 실행 중인 세션은 감시 없이 계속 돎**
   - 이유: 로더 생존은 agent-run 시작 시점에만 확인하므로(w3d1), 확인을 통과한 뒤 로더가 죽으면 이벤트 수집과 판정, kill이 멈춘 채 에이전트가 계속 실행되고 사용자는 알 수 없다.
-  - 비고: 완화책은 런처가 세션 동안 로더 잠금을 주기적으로 확인하고, 사라지면 세션을 끊는 것(kill 구현 뒤에 의미가 있음)
-  - 시점: kill 구현 뒤 결정
+  - 비고: 완화책은 관리자(mycontainer_run)가 세션 동안 주기적으로 myc_loader_alive 를 확인하고 로더가 없으면 스스로 cgroup.kill 을 쓰는 것. 러너 timeout 정책(결정 12)과 함께 설계.
+  - 시점: w4
+  - 해결: (미해결)
+- [ ] **귀속 안 된 세션(_unattributed)의 BLOCK은 종료하지 못함**
+  - 이유: kill 은 세션 ID 끝 숫자로 cgroup 경로를 만드는데 _unattributed 에는 숫자가 없어 시도하지 않는다. result: skipped 기록과 stderr 경고만 남고 그 cgroup 은 계속 돈다.
+  - 비고: 러너 인프라 검증은 _unattributed 에 기록이 있으면 FAIL 로 보지만 운영에서는 조용히 지나갈 수 있다. cgroup_id 만으로 경로를 찾는 방법(예: by-cgroup 링크 복원)을 검토.
+  - 시점: w4
+  - 해결: (미해결)
+- [ ] **TAG_HIT BLOCK 은 쓴 세션만 종료함**
+  - 이유: 실행한 쪽이 살아 있는 다른 세션이어도 그 세션은 계속 돈다. 쓴 세션이 이미 끝났으면 already_gone 이 된다 (s01).
+  - 비고: design-memo-w2 §8 "BLOCK 대응 대상" 열린 질문과 함께 결정.
+  - 시점: w4
+  - 해결: (미해결)
+- [ ] **failed 재시도에 상한이 없음**
+  - 이유: 권한 오류처럼 계속 실패하는 경우 BLOCK 이 올 때마다 kill_requested 를 되돌려 failed 기록이 한 줄씩 쌓인다.
+  - 비고: 횟수 상한이나 백오프를 둘지 정한다.
+  - 시점: w4
+  - 해결: (미해결)
+- [ ] **kill 뒤 state 파일과 컨테이너 폴더가 남고, 컨테이너 폴더는 평소에도 삭제되지 않음**
+  - 이유: mycontainer_run 이 cgroup.kill 로 같이 죽어 remove_state_file 전에 끝난다. 정상 종료 세션도 컨테이너 폴더(upper/work)를 지우지 않아 VM 에 155개가 쌓여 있었다. 남은 state 파일은 ps/exec 가 죽은 컨테이너를 보여 줄 수 있다.
+  - 비고: 러너 B안(host.sh 가 upper 를 읽음)이 upper 의 유지에 의존하므로 삭제 주체와 시점은 B안, leak_check 와 함께 정한다. 수용한 한계의 "세션이 끝나도 by-cgroup 링크가 남음"과 같은 정리 작업으로 묶는다.
+  - 시점: w3
+  - 해결: (미해결)
+- [ ] **fixture 의 action 줄이 손으로 고친 것**
+  - 이유: real_s99_dummy_block 과 bad_double_action 의 kill 줄은 실제 VM 로그가 아니다.
+  - 비고: VM 에서 새 형식의 s99 로그를 떠서 교체한다 (sudo 필요).
+  - 시점: w4
+  - 해결: (미해결)
+- [ ] **감시 해제(unwatch) 실패가 verdicts.jsonl 에 남지 않고 stderr 에만 나옴**
+  - 이유: 실패하면 session_cgroups 에 항목이 남지만 기록으로는 알 수 없다.
+  - 시점: w5
   - 해결: (미해결)
 
 ### 세션 로그와 리포트
@@ -106,6 +140,14 @@
 - [ ] **시작이 거부된 agent-run 도 세션 폴더, by-cgroup 링크, meta.json 이 남고 "세션 시작"이 출력됨** (`run_container.sh`)
   - 이유: 세션 폴더와 by-cgroup 링크, meta.json 은 mycontainer_run 을 부르기 전에 만들어진다. 감시 맵을 못 열거나, 등록하지 못하거나, cgroup 에 합류하지 못하거나, 로더가 없어서 거부되어도 이벤트 없는 세션이 남고 리포트에서 실제 세션과 구분되지 않는다. 남은 by-cgroup 링크는 leak_check 에서 예외로 다룬다.
   - 비고: 세션 폴더 생성을 확인 뒤로 옮기거나, 거부 사유를 meta.json 에 기록하는 방안. 리포트가 exit_code 와 이벤트 유무로 거르는 것은 임시 대응이 된다.
+  - 시점: w5
+  - 해결: (미해결)
+
+### 빌드와 재현성
+
+- [ ] **vmlinux.h 를 만드는 단계가 없음**
+  - 이유: 추적하지 않는 4.4MB 파일이라 다른 머신이나 새 클론에서는 빌드할 수 없다.
+  - 비고: build.sh 에서 파일이 없으면 bpftool btf dump file /sys/kernel/btf/vmlinux format c 로 생성하고, BTF 가 없으면 안내와 함께 실패하게 한다. 커널 버전마다 달라지는 파일이므로 머신마다 생성.
   - 시점: w5
   - 해결: (미해결)
 
@@ -134,7 +176,7 @@
     exec가 몰리는 정상 워크플로우(w3 목요일)에서 다시 측정한다.
   - 반영: 종료 시 log stats 로 확인, 나쁘면 스레드 분리
 - **세션 칸 64개를 넘으면 밀려난 세션의 kill_requested가 사라짐** (`session_log.c`)
-  - 이유: 밀려났다 다시 열린 세션에서 BLOCK이 오면 종료 요청이 한 번 더 나갈 수 있다.
+  - 이유: 밀려났다 다시 열린 세션에서 BLOCK이 오면 종료 요청이 한 번 더 나간다. 그 cgroup 이 이미 없으면 already_gone, 아직 있으면 sent 가 다시 나갈 수 있다.
   - 반영: README 한계 섹션
 - **세션이 끝나도 by-cgroup 링크가 남음** (`run_container.sh`)
   - 이유: 정리하는 코드가 없어 끝난 세션의 링크가 sessions/by-cgroup 에 쌓인다.

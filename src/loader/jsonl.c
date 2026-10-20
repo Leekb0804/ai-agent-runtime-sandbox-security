@@ -110,15 +110,17 @@ void jsonl_write_verdict(FILE *f, const char *session,
 }
 
 /*
- * action 레코드: 머리 + 대상 cgroup, 대응 이름("kill"), 결과, 단계, errno, 이유 + 줄 끝.
+ * action 레코드: 머리 + 대상 cgroup, 대응 이름(kill / would_kill), 결과, 단계, errno, 이유 + 줄 끝.
  * 대응은 이벤트가 아니라 판정에 따른 결과라서 event 객체가 없고 cgroup_id 를 직접 넣는다.
- * result 와 detail 은 코드 안의 고정 문자열이지만 다른 문자열과 같은 방식으로 이스케이프해서 쓴다.
+ * action, result, detail 은 코드 안의 고정 문자열이지만 다른 문자열과 같은 방식으로 이스케이프해서 쓴다.
  */
-void jsonl_write_kill(FILE *f, const char *session, __u64 cgroup_id,
-                      const char *result, const char *detail, int err, const char *reason)
+void jsonl_write_action(FILE *f, const char *session, __u64 cgroup_id, const char *action,
+                        const char *result, const char *detail, int err, const char *reason)
 {
     put_head(f, "action", session);
-    fprintf(f, ",\"cgroup_id\":%llu,\"action\":\"kill\",\"result\":", (unsigned long long)cgroup_id);
+    fprintf(f, ",\"cgroup_id\":%llu,\"action\":", (unsigned long long)cgroup_id);
+    json_put_string(f, action ? action : "", 32);
+    fputs(",\"result\":", f);
     json_put_string(f, result ? result : "", 32);
     fputs(",\"detail\":", f);
     json_put_string(f, detail ? detail : "", 32);

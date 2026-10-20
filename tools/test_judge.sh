@@ -119,6 +119,22 @@ echo '{"schema_version":0,"type":"action","session":"t-1","logged_at_ms":1,"cgro
 check "s02 기대값: kill 레코드가 없으면 통과" 0 "$TMP/s02_ok" "$S02"
 check "s02 기대값: kill 레코드가 하나라도 있으면 실패" 1 "$TMP/s02_kill" "$S02"
 
+echo "[관찰 모드의 would_kill 레코드]"
+# judge.sh 는 action 이름을 제한하지 않는다 (flat 이 .action, .result 를 그대로 꺼낸다).
+# 관찰 모드 로더가 남기는 would_kill 한 줄(손으로 만든 로그)이 그대로 세지고, action=kill 집계에는 섞이지 않는지 고정한다
+mkdir -p "$TMP/observe"
+cat >"$TMP/observe/verdicts.jsonl" <<'EOF5'
+{"schema_version":0,"type":"action","session":"t-1","logged_at_ms":1,"cgroup_id":500,"action":"would_kill","result":"not_sent","detail":"observe_mode","errno":0,"reason":"x"}
+EOF5
+# 양성: would_kill/not_sent 정확히 1개. 음성: 같은 로그에서 action=kill 은 0개
+cat >"$TMP/expect_observe.json" <<'EOF5'
+{ "expect": [
+  { "match": { "type": "action", "action": "would_kill", "result": "not_sent" }, "count": 1 },
+  { "match": { "type": "action", "action": "kill" }, "count": 0 }
+] }
+EOF5
+check "would_kill 은 그대로 세지고 action=kill 에 섞이지 않음" 0 "$TMP/observe" "$TMP/expect_observe.json"
+
 echo "[가짜 통과 방지: 빈 로그]"
 check "빈 로그는 s00 의 양성 검사 때문에 실패" 1 "$FIX/empty" "$S00"
 # 존재하지 않는 폴더를 일부러 넘긴다 (경로가 한글이라 오타처럼 보이지만 의도적이다).

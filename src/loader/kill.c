@@ -12,6 +12,12 @@
 
 static kill_unwatch_fn g_unwatch;
 static void *g_unwatch_ctx;
+static enum kill_mode g_mode = KILL_MODE_KILL;
+
+void kill_set_mode(enum kill_mode mode)
+{
+    g_mode = mode;
+}
 
 void kill_set_unwatch(kill_unwatch_fn fn, void *ctx)
 {
@@ -25,6 +31,7 @@ static const char *status_str(enum kill_status st)
     case KILL_STATUS_SENT:         return "sent";
     case KILL_STATUS_ALREADY_GONE: return "already_gone";
     case KILL_STATUS_SKIPPED:      return "skipped";
+    case KILL_STATUS_OBSERVED:     return "not_sent";
     case KILL_STATUS_FAILED:       return "failed";
     }
     return "failed";
@@ -56,6 +63,15 @@ enum kill_status kill_session_at(const char *cgroup_root, struct session *s, con
         st = KILL_STATUS_SKIPPED;
         detail = "unattributed";
         err = 0;
+    } else if (g_mode == KILL_MODE_OBSERVE) {
+        /*
+         * 관찰 모드: cgroup.kill 에 쓰지 않고(kill_cgroup_at 을 부르지 않고) "종료했을 것이다"만 남긴다.
+         * 감시 해제도 하지 않는다 (세션이 계속 돌므로 이후 이벤트를 계속 받아야 오탐을 셀 수 있다).
+         */
+        session_write_action(s, "would_kill", status_str(KILL_STATUS_OBSERVED), "observe_mode", 0, reason);
+        fprintf(stderr, "[kill] (관찰 모드) 세션 %s (cgroup %llu) would_kill: %s\n",
+                s->id, (unsigned long long)s->cgroup_id, reason ? reason : "");
+        return KILL_STATUS_OBSERVED;
     } else {
         struct kill_outcome o = kill_cgroup_at(cgroup_root, s->id, s->cgroup_id);
         st = from_result(o.result);
@@ -67,7 +83,7 @@ enum kill_status kill_session_at(const char *cgroup_root, struct session *s, con
      * 판정과 같은 파일(verdicts.jsonl)에 type=action 레코드로 남겨서 "판정 -> 대응" 순서가 한눈에 보이게 한다.
      * 화면 알림은 stderr 로 낸다. stdout 은 JSON 로그용으로 남겨 두어 사람이 읽는 알림이 JSON 줄 사이에 섞이지 않게 한다.
      */
-    session_write_kill(s, status_str(st), detail, err, reason);
+    session_write_action(s, "kill", status_str(st), detail, err, reason);
     fprintf(stderr, "[kill] 세션 %s (cgroup %llu) result=%s detail=%s errno=%d: %s\n",
             s->id, (unsigned long long)s->cgroup_id, status_str(st), detail, err, reason ? reason : "");
     if (st == KILL_STATUS_SKIPPED)

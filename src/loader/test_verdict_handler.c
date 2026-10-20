@@ -14,7 +14,7 @@
  *   <tmp>/by-cgroup/778  -> "../bad id"      허용되지 않는 문자(공백)
  *   <tmp>/by-cgroup/779  -> ..               상위 폴더로 올라가는 경로 조작 시도
  *
- *   <tmp>/by-cgroup/2001~2004 -> ../sess-F 등  kill 결과별 플래그 처리를 보는 세션들
+ *   <tmp>/by-cgroup/2001~2005 -> ../sess-F 등  kill 결과별 플래그 처리를 보는 세션들
  *
  * 이 링크들은 실제로는 run_container.sh 의 "ln -sfn" 이 만드는 것이고(session_log.h 참고),
  * 여기서는 C 의 symlink() 로 흉내 낸다.
@@ -52,7 +52,7 @@ static int failures;
 
 /*
  * 가짜 kill_session. fake_script 에 정해 둔 결과를 차례로 돌려주고, 다 쓰면 sent 를 돌려준다.
- * 기록 형식은 진짜와 같은 session_write_kill 을 쓴다 (detail 은 "fake").
+ * 기록 형식은 진짜와 같은 session_write_action 을 쓴다 (detail 은 "fake". OBSERVED 면 진짜처럼 would_kill/not_sent).
  */
 static enum kill_status fake_script[4];
 static int fake_script_len;
@@ -64,6 +64,7 @@ static const char *fake_status_str(enum kill_status st)
     case KILL_STATUS_SENT:         return "sent";
     case KILL_STATUS_ALREADY_GONE: return "already_gone";
     case KILL_STATUS_SKIPPED:      return "skipped";
+    case KILL_STATUS_OBSERVED:     return "not_sent";
     case KILL_STATUS_FAILED:       return "failed";
     }
     return "failed";
@@ -73,7 +74,7 @@ enum kill_status kill_session(struct session *s, const char *reason)
 {
     enum kill_status st = fake_calls < fake_script_len ? fake_script[fake_calls] : KILL_STATUS_SENT;
     fake_calls++;
-    session_write_kill(s, fake_status_str(st), "fake", 0, reason);
+    session_write_action(s, st == KILL_STATUS_OBSERVED ? "would_kill" : "kill", fake_status_str(st), "fake", 0, reason);
     return st;
 }
 
@@ -181,9 +182,9 @@ static void setup(void)
     path_of(p, sizeof(p), "by-cgroup/778");  symlink("../bad id", p);   /* 공백이 든 ID */
     path_of(p, sizeof(p), "by-cgroup/779");  symlink("..", p);          /* 경로 조작 */
 
-    /* kill 결과별 플래그 처리를 보는 세션 4개 (서로 다른 칸이라 플래그가 섞이지 않는다) */
-    const char *names[] = { "sess-F", "sess-S", "sess-G", "sess-K" };
-    for (int i = 0; i < 4; i++) {
+    /* kill 결과별 플래그 처리를 보는 세션 5개 (서로 다른 칸이라 플래그가 섞이지 않는다) */
+    const char *names[] = { "sess-F", "sess-S", "sess-G", "sess-K", "sess-O" };
+    for (int i = 0; i < 5; i++) {
         char d[PATH_MAX], l[PATH_MAX], t[64], rel[64];
         path_of(d, sizeof(d), names[i]);
         mkdir(d, 0755);
@@ -251,6 +252,7 @@ static void test_block_kills_once(void)
  * 같은 세션에 BLOCK 을 두 번 보내고 가짜 kill_session 이 몇 번 불렸는지 센다.
  *   failed                        -> 플래그를 되돌리므로 두 번째 BLOCK 에서 다시 불린다 (2번)
  *   sent / already_gone / skipped -> 플래그를 유지하므로 두 번째 BLOCK 에서는 불리지 않는다 (1번)
+ *   observed (관찰 모드)            -> 유지한다. 세션당 would_kill 은 한 줄이다 (1번)
  */
 static int blocks_twice(__u64 cg, enum kill_status first)
 {
@@ -268,6 +270,7 @@ static void test_kill_result_flag(void)
     CHECK(blocks_twice(2002, KILL_STATUS_SENT) == 1, "sent_keeps_flag");
     CHECK(blocks_twice(2003, KILL_STATUS_ALREADY_GONE) == 1, "already_gone_keeps_flag");
     CHECK(blocks_twice(2004, KILL_STATUS_SKIPPED) == 1, "skipped_keeps_flag");
+    CHECK(blocks_twice(2005, KILL_STATUS_OBSERVED) == 1, "observed_keeps_flag");
 }
 
 /*

@@ -1,7 +1,8 @@
 /*
  * test_kill_session.c
  *
- * kill.c 의 단위 테스트: 결과가 verdicts.jsonl 에 어떻게 기록되는지, 감시 해제 콜백이 언제 불리는지.
+ * kill.c 의 단위 테스트: 결과가 verdicts.jsonl 에 어떻게 기록되는지, 감시 해제 콜백이 언제 불리는지,
+ * 관찰 모드(kill_set_mode)에서 종료하지 않고 would_kill 만 기록하는지.
  * 커널 프로그램, libbpf, sudo 가 필요 없다. 진짜 /sys/fs/cgroup 대신 임시 폴더를 kill_session_at 에 넘긴다.
  *
  * 임시 폴더 구조 (<tmp> 는 mkdtemp 로 만든 폴더):
@@ -142,18 +143,59 @@ static int ends_with(const char *s, const char *suffix)
  * 기록이 기대한 형식인가: 머리(schema_version, type, session) 와
  * 꼬리(cgroup_id, action, result, detail, errno, reason) 를 순서까지 정확히 비교한다.
  */
-static int record_is(const char *sid, __u64 cg, const char *result, const char *detail, int err,
-                     const char *reason)
+static int action_record_is(const char *sid, __u64 cg, const char *action, const char *result,
+                            const char *detail, int err, const char *reason)
 {
     char head[256], tail[512];
     snprintf(head, sizeof(head), "{\"schema_version\":0,\"type\":\"action\",\"session\":\"%s\",\"logged_at_ms\":", sid);
     snprintf(tail, sizeof(tail),
-             ",\"cgroup_id\":%llu,\"action\":\"kill\",\"result\":\"%s\",\"detail\":\"%s\",\"errno\":%d,\"reason\":\"%s\"}",
-             (unsigned long long)cg, result, detail, err, reason);
+             ",\"cgroup_id\":%llu,\"action\":\"%s\",\"result\":\"%s\",\"detail\":\"%s\",\"errno\":%d,\"reason\":\"%s\"}",
+             (unsigned long long)cg, action, result, detail, err, reason);
     char *line = last_line(sid);
     int ok = line && strncmp(line, head, strlen(head)) == 0 && ends_with(line, tail);
     free(line);
     return ok;
+}
+
+/* action="kill" 기록인가 (기존 케이스들) */
+static int record_is(const char *sid, __u64 cg, const char *result, const char *detail, int err,
+                     const char *reason)
+{
+    return action_record_is(sid, cg, "kill", result, detail, err, reason);
+}
+
+/* 세션의 verdicts.jsonl 줄 수 (없으면 0) */
+static int line_count(const char *sid)
+{
+    char p[600], buf[1024];
+    snprintf(p, sizeof(p), "%s/%s/verdicts.jsonl", sessroot, sid);
+    FILE *f = fopen(p, "r");
+    if (!f)
+        return 0;
+    int n = 0;
+    while (fgets(buf, sizeof(buf), f))
+        n++;
+    fclose(f);
+    return n;
+}
+
+/* 파일 크기 (없으면 -1). 관찰 모드에서 cgroup.kill 에 아무것도 쓰지 않았는지 본다 */
+static long file_size(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 ? (long)st.st_size : -1;
+}
+
+/*
+ * 케이스마다 처음과 끝에 부른다. 대응 방식(전역)을 기본(kill)으로, 감시 해제 콜백과 그 기록을 처음 상태로 되돌려
+ * 한 케이스가 바꾼 전역 상태가 다른 케이스에 새지 않게 한다.
+ */
+static void reset_case(void)
+{
+    kill_set_mode(KILL_MODE_KILL);
+    kill_set_unwatch(fake_unwatch, &uw_marker);
+    uw_calls = 0;
+    uw_rc = 0;
 }
 
 static int rm_entry(const char *path, const struct stat *sb, int flag, struct FTW *ftw)
@@ -227,6 +269,48 @@ int main(void)
     st = kill_session_at(cgroot, session_get(cg_sent), "r-uwfail");
     CHECK(st == KILL_STATUS_SENT && uw_calls == 1 && record_is(SID_SENT, cg_sent, "sent", "written", 0, "r-uwfail"),
           "unwatch_error_keeps_sent");
+
+    /* ---------- 관찰 모드 ---------- */
+    char killfile[700];
+    snprintf(killfile, sizeof(killfile), "%s/mycontainer-123/cgroup.kill", cgroot);
+
+    /* 관찰 모드: kill_cgroup_at 을 부르지 않고, 감시 해제도 하지 않고, would_kill 한 줄만 남긴다 */
+    reset_case();
+    kill_set_mode(KILL_MODE_OBSERVE);
+    calls_before = real_calls;
+    int lines_before = line_count(SID_SENT);
+    /* 앞 케이스들이 "1" 을 써 두었으므로 비운다. 같은 자리에 덮어쓰면 크기가 그대로라 쓴 것을 알 수 없기 때문이다 */
+    if (truncate(killfile, 0) != 0)
+        die(killfile);
+    long kill_size_before = file_size(killfile);
+    st = kill_session_at(cgroot, session_get(cg_sent), "r-observe");
+    CHECK(st == KILL_STATUS_OBSERVED, "observe_returns_observed");
+    CHECK(real_calls == calls_before, "observe_does_not_call_kill_cgroup_at");
+    CHECK(uw_calls == 0, "observe_does_not_unwatch");
+    CHECK(kill_size_before == 0 && file_size(killfile) == 0, "observe_does_not_write_cgroup_kill");
+    CHECK(line_count(SID_SENT) == lines_before + 1
+          && action_record_is(SID_SENT, cg_sent, "would_kill", "not_sent", "observe_mode", 0, "r-observe"),
+          "observe_record_one_line_exact_fields");
+    reset_case();
+
+    /* 관찰 모드에서도 _unattributed 는 kill/skipped/unattributed (would_kill 이 아님). kill_cgroup_at 도 부르지 않는다 */
+    reset_case();
+    kill_set_mode(KILL_MODE_OBSERVE);
+    calls_before = real_calls;
+    st = kill_session_at(cgroot, session_get(CG_UNATTR), "r-obs-unattr");
+    CHECK(st == KILL_STATUS_SKIPPED && real_calls == calls_before
+          && record_is(UNATTRIBUTED_ID, CG_UNATTR, "skipped", "unattributed", 0, "r-obs-unattr"),
+          "observe_unattributed_still_skipped");
+    reset_case();
+
+    /* 기본 모드로 되돌린 뒤에는 원래대로 종료한다 (관찰 모드가 남지 않는다) */
+    reset_case();
+    calls_before = real_calls;
+    st = kill_session_at(cgroot, session_get(cg_sent), "r-back");
+    CHECK(st == KILL_STATUS_SENT && real_calls == calls_before + 1 && uw_calls == 1
+          && record_is(SID_SENT, cg_sent, "sent", "written", 0, "r-back"),
+          "kill_mode_restored_after_observe");
+    reset_case();
 
     /* 이 테스트가 만든 임시 폴더만 지운다 (열린 로그 파일을 먼저 닫는다) */
     session_log_close_all();

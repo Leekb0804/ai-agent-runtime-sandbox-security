@@ -20,9 +20,12 @@
  *   failed       : 그 밖의 실패. errno 를 남긴다. 다음 BLOCK 때 다시 시도한다 (verdict_handler.c)
  *   skipped      : 세션을 찾지 못해(_unattributed) 종료 대상을 알 수 없다. 시도하지 않는다
  *
- * ===== 남은 것 =====
- * BLOCK 을 기록만 하고 세션은 계속 돌리는 관찰 전용 모드(평가용)는 아직 없다. 그 기록 이름으로
- * "would_kill" 을 비워 둔다.
+ * ===== 관찰 모드 (로더의 --no-kill, 평가용) =====
+ * BLOCK 이어도 세션을 종료하지 않고 "종료했을 것이다"만 남긴다. 정상 작업에서 BLOCK 이 몇 번 나는지(오탐) 재려는 것이다.
+ *   기록: action="would_kill", result="not_sent", detail="observe_mode", errno 0 (action="kill" 집계에 섞이지 않는다)
+ *   대체하는 것은 cgroup.kill 에 쓰는 단계 하나뿐이다. _unattributed 는 관찰 모드에서도 kill/skipped 로 기록한다
+ *   (kill 모드에서도 종료할 수 없는 것을 would_kill 로 적으면 "종료할 수 있었다"는 오해를 부른다).
+ *   감시 해제(unwatch)는 하지 않는다. 세션이 계속 돌므로 이후 이벤트도 계속 받아야 한다.
  */
 #ifndef KILL_H
 #define KILL_H
@@ -38,8 +41,18 @@ enum kill_status {
     KILL_STATUS_SENT         = 0,
     KILL_STATUS_ALREADY_GONE = 1,
     KILL_STATUS_SKIPPED      = 2,
+    KILL_STATUS_OBSERVED     = 3,   /* 관찰 모드: 종료하지 않고 would_kill 만 기록했다 */
     KILL_STATUS_FAILED       = -1,
 };
+
+/* BLOCK 에 대한 대응 방식. 기본은 KILL */
+enum kill_mode {
+    KILL_MODE_KILL    = 0,   /* cgroup.kill 로 세션을 종료한다 */
+    KILL_MODE_OBSERVE = 1,   /* 관찰 모드: 종료하지 않고 would_kill 만 기록한다 (평가용) */
+};
+
+/* 대응 방식을 정한다. 로더가 시작할 때 한 번 부른다 (--no-kill 이면 OBSERVE). 부르지 않으면 KILL */
+void kill_set_mode(enum kill_mode mode);
 
 /*
  * 종료 요청이 전달된(sent) 뒤 호출되는 콜백. 그 cgroup 을 감시 대상(session_cgroups 맵)에서 지운다.

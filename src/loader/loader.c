@@ -25,12 +25,14 @@
  *                               -> dispatch_event -> 탐지기들 -> handle_verdict
  *                                                       -> verdicts.jsonl (+ BLOCK 이면 kill_session)
  *
- * 실행: sudo ./myc_loader [세션 루트 디렉토리] [--detectors=이름,이름,...]
+ * 실행: sudo ./myc_loader [세션 루트 디렉토리] [--detectors=이름,이름,...] [--no-kill]
  *       세션 루트를 생략하면 /var/lib/mycontainer/sessions. 옵션과 세션 루트의 순서는 상관없다.
  *       --detectors 를 생략하면 시험용(test_only)이 아닌 탐지기만 켠다. 더미 탐지기는 이름으로 명시해야 켜진다
  *       (예: 러너는 --detectors=dummy_block,dummy_suspect,write_exec_boundary).
+ *       --no-kill 은 관찰 모드(평가용)이다. BLOCK 이어도 세션을 종료하지 않고 action="would_kill" 만 기록한다 (kill.h).
+ *       러너는 이 옵션을 쓰지 않는다.
  *       잘못된 인자(모르는 옵션, 모르는 탐지기 이름 등)는 BPF 를 올리기 전에 거부하고 종료 코드 2 로 끝난다.
- *       준비되면 stderr 에 "[loader] ready (sessions root: <루트>, mode: kill, detectors: <알파벳순 목록>)" 를 낸다.
+ *       준비되면 stderr 에 "[loader] ready (sessions root: <루트>, mode: <kill|observe>, detectors: <알파벳순 목록>)" 를 낸다.
  * 이 로더는 agent-run 보다 먼저 떠 있어야 한다 (session_cgroups map 이 있어야 cgroup 등록이 된다).
  */
 #include <stdio.h>
@@ -53,7 +55,7 @@
 #include "loader_args.h"
 
 #define DEFAULT_SESSIONS_ROOT "/var/lib/mycontainer/sessions"
-#define USAGE "사용법: myc_loader [세션 루트] [--detectors=이름,이름,...]"
+#define USAGE "사용법: myc_loader [세션 루트] [--detectors=이름,이름,...] [--no-kill]"
 
 /*
  * 종료 플래그. 시그널 핸들러가 세우고 메인 루프가 읽는다 (volatile sig_atomic_t 관용구).
@@ -171,6 +173,11 @@ int main(int argc, char **argv)
     /* 어떤 탐지기가 켜져 있는지 시작할 때 한 번 출력한다 */
     dispatcher_print_detectors(stderr);
 
+    /* BLOCK 에 대한 대응 방식. --no-kill 이면 관찰 모드이고, 놓치기 쉬우므로 목록 바로 뒤에 눈에 띄게 알린다 */
+    kill_set_mode(args.no_kill ? KILL_MODE_OBSERVE : KILL_MODE_KILL);
+    if (args.no_kill)
+        fprintf(stderr, "[loader] !!! 관찰 모드: BLOCK 이어도 세션을 종료하지 않는다 (평가용)\n");
+
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
 
@@ -209,8 +216,9 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* 러너가 이 줄의 mode 와 detectors 를 기대와 비교한다 (run_scenarios.sh). mode 는 아직 kill 하나뿐이다 */
-    fprintf(stderr, "[loader] ready (sessions root: %s, mode: kill, detectors: %s)\n", root, detector_names);
+    /* 러너가 이 줄의 mode 와 detectors 를 기대와 비교한다 (run_scenarios.sh). mode 는 위에서 정한 대응 방식이다 */
+    fprintf(stderr, "[loader] ready (sessions root: %s, mode: %s, detectors: %s)\n",
+            root, args.no_kill ? "observe" : "kill", detector_names);
 
     /* 최대 100ms 대기하다가 이벤트가 있으면 handle_event 호출. stop 플래그가 설 때까지 반복 */
     while (!stop)

@@ -84,7 +84,7 @@ echo "[8/10] 단위 테스트: 세션 cgroup 종료 (test_kill)"
 gcc -Wall -Wextra -I. -Iloader -o test_kill \
     loader/test_kill.c loader/kill_cgroup.c
 
-echo "[9/10] 단위 테스트: kill 결과 기록과 감시 해제 (test_kill_session)"
+echo "[9/10] 단위 테스트: kill 결과 기록, 감시 해제, 관찰 모드 (test_kill_session)"
 # 진짜 kill.c 와 세션 로그를 링크하고, 가짜 cgroup 루트를 kill_session_at 으로 넘긴다.
 # --wrap=kill_cgroup_at : kill.c 의 kill_cgroup_at 호출이 테스트의 __wrap_kill_cgroup_at 으로 가게 한다
 #                         (불렸는지 세고 진짜 함수 __real_kill_cgroup_at 을 부른다).
@@ -96,4 +96,4 @@ echo "[10/10] 단위 테스트: 로더 인자 해석 (test_loader_args)"
 gcc -Wall -Wextra -I. -Iloader -o test_loader_args \
     loader/test_loader_args.c
 
-echo "빌드 완료. 테스트: ./test_dispatcher && ./test_verdict_handler && ./test_write_exec_boundary && ./test_loader_lock && ./test_kill && ./test_kill_session && ./test_loader_args  /  실행: sudo ./myc_loader (더미 탐지기는 --detectors 로 명시해야 켜짐)"
+echo "빌드 완료. 테스트: ./test_dispatcher && ./test_verdict_handler && ./test_write_exec_boundary && ./test_loader_lock && ./test_kill && ./test_kill_session && ./test_loader_args  /  실행: sudo ./myc_loader (더미 탐지기는 --detectors 로 명시해야 켜짐, 관찰 모드는 --no-kill)"

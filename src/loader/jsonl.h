@@ -26,7 +26,7 @@
  * 모두 한 줄이고 "type" 필드로 구분한다. 한 줄은 항상 "\n" 으로 끝난다.
  *   event   : 커널이 보낸 이벤트 (events.jsonl)
  *   verdict : 탐지기가 낸 판정 (verdicts.jsonl)
- *   action  : 판정에 따른 대응 기록. 지금은 세션 종료 시도의 결과 action="kill" (verdicts.jsonl)
+ *   action  : 판정에 따른 대응 기록. 세션 종료 시도의 결과 action="kill", 관찰 모드의 action="would_kill" (verdicts.jsonl)
  *
  * 외부에서 온 문자열(파일 경로 등)은 전부 json_put_string 으로 이스케이프해서 쓴다.
  * (공격자가 정한 문자열로 로그에 줄을 끼워 넣는 위조를 막으려는 것이다. json_escape.h 참고)
@@ -56,12 +56,13 @@ void jsonl_write_verdict(FILE *f, const char *session,
                          const struct verdict *v);
 
 /*
- * 세션 종료 시도(action="kill") 한 줄을 f 에 쓴다.
- *   result : sent / already_gone / failed / skipped
- *   detail : 어느 단계에서 끝났는지 (kill_cgroup.h 의 kill_outcome.detail, 또는 unattributed)
+ * 대응(action) 한 줄을 f 에 쓴다. 필드 구성은 action 이름과 상관없이 같다.
+ *   action : kill (세션 종료 시도) 또는 would_kill (관찰 모드: 종료했을 것이다)
+ *   result : kill 이면 sent / already_gone / failed / skipped, would_kill 이면 not_sent
+ *   detail : 어느 단계에서 끝났는지 (kill_cgroup.h 의 kill_outcome.detail, unattributed, observe_mode)
  *   err    : 실패한 호출의 errno. 없으면 0
  */
-void jsonl_write_kill(FILE *f, const char *session, __u64 cgroup_id,
-                      const char *result, const char *detail, int err, const char *reason);
+void jsonl_write_action(FILE *f, const char *session, __u64 cgroup_id, const char *action,
+                        const char *result, const char *detail, int err, const char *reason);
 
 #endif /* JSONL_H */

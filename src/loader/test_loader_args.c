@@ -53,7 +53,7 @@ static int names_are(int n, const char *x0, const char *x1, const char *x2)
 int main(void)
 {
     /* ---------- 받아들임 ---------- */
-    CHECK(parse(NULL) == 0 && a.root == NULL && !a.has_detectors && a.n_detectors == 0,
+    CHECK(parse(NULL) == 0 && a.root == NULL && !a.has_detectors && a.n_detectors == 0 && !a.no_kill,
           "accept_no_args");
     CHECK(parse("/tmp/s", NULL) == 0 && a.root && strcmp(a.root, "/tmp/s") == 0 && !a.has_detectors,
           "accept_root_only_compat");
@@ -79,12 +79,23 @@ int main(void)
     /* 같은 이름 두 번은 파서가 아니라 dispatcher_select 가 거부한다 */
     CHECK(parse("--detectors=a,a", NULL) == 0 && names_are(2, "a", "a", NULL), "accept_duplicate_left_to_select");
 
+    /* --no-kill: 값 없는 옵션. 다른 인자와 섞여도, 순서를 바꿔도 같다 */
+    CHECK(parse("--no-kill", NULL) == 0 && a.no_kill && a.root == NULL && !a.has_detectors, "accept_no_kill");
+    CHECK(parse("--no-kill", "--detectors=x,y", "/tmp/s", NULL) == 0 && a.no_kill
+          && strcmp(a.root, "/tmp/s") == 0 && names_are(2, "x", "y", NULL)
+          && parse("/tmp/s", "--detectors=x,y", "--no-kill", NULL) == 0 && a.no_kill
+          && strcmp(a.root, "/tmp/s") == 0 && names_are(2, "x", "y", NULL),
+          "accept_no_kill_with_detectors_and_root");
+
     /* 이전 호출의 결과가 남지 않는다 */
-    parse("--detectors=a", "/tmp/s", NULL);
-    CHECK(parse(NULL) == 0 && a.root == NULL && !a.has_detectors && a.n_detectors == 0, "reset_between_calls");
+    parse("--detectors=a", "/tmp/s", "--no-kill", NULL);
+    CHECK(parse(NULL) == 0 && a.root == NULL && !a.has_detectors && a.n_detectors == 0 && !a.no_kill,
+          "reset_between_calls");
 
     /* ---------- 거부 ---------- */
-    CHECK(parse("--no-kill", NULL) == -1 && strstr(err, "--no-kill"), "reject_unknown_option_no_kill");
+    CHECK(parse("--foo", NULL) == -1 && strstr(err, "--foo"), "reject_unknown_option_foo");
+    CHECK(parse("--no-kill", "--no-kill", NULL) == -1 && strstr(err, "두 번"), "reject_no_kill_twice");
+    CHECK(parse("--no-kill=1", NULL) == -1 && strstr(err, "알 수 없는 옵션"), "reject_no_kill_with_value");
     CHECK(parse("-x", NULL) == -1, "reject_unknown_short_option");
     CHECK(parse("-", NULL) == -1, "reject_single_dash");
     CHECK(parse("--detectors", NULL) == -1, "reject_detectors_without_equals");

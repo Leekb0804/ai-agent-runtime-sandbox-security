@@ -7,12 +7,14 @@
  * 받는 인자 (순서는 상관없다):
  *   [세션 루트]          위치 인자 0~1개. 없으면 호출한 쪽이 기본값을 쓴다 (예전의 argv[1] 과 같은 뜻)
  *   --detectors=a,b,c   켤 탐지기 이름 목록 (dispatcher_select 참고)
+ *   --no-kill           관찰 모드. BLOCK 이어도 세션을 종료하지 않고 would_kill 만 기록한다 (평가용, kill.h 참고)
  *
  * 잘못된 인자는 모두 거부한다 (fail-closed). 잘못 읽고 시작하면 "엉뚱한 폴더에 기록"하거나
  * "탐지기가 빠진 채 감시"하면서도 정상처럼 보이기 때문이다:
  *   - 알 수 없는 옵션 (- 로 시작하는 모든 인자. 그래서 세션 루트도 - 로 시작할 수 없다)
  *   - 위치 인자 2개 이상, 빈 위치 인자
  *   - --detectors 두 번, 값이 비었거나 a,,b 처럼 빈 칸, 이름이 너무 김, 개수가 MAX_DETECTORS 초과
+ *   - --no-kill 두 번, --no-kill=값 처럼 값이 붙은 것 (값을 받지 않는 옵션이라 모르는 옵션으로 본다)
  * 같은 이름 두 번이나 등록되지 않은 이름은 여기서 보지 않고 dispatcher_select 가 거부한다.
  */
 #ifndef LOADER_ARGS_H
@@ -26,10 +28,12 @@
 #define LOADER_ARGS_NAME_MAX 64
 
 #define LOADER_ARGS_DETECTORS_OPT "--detectors="
+#define LOADER_ARGS_NO_KILL_OPT   "--no-kill"
 
 struct loader_args {
     const char *root;                                   /* 세션 루트 (argv 안을 가리킴). 없으면 NULL */
     int has_detectors;                                  /* --detectors 를 받았는가 */
+    int no_kill;                                        /* --no-kill 을 받았는가 (관찰 모드) */
     int n_detectors;                                    /* 받은 이름 개수 */
     char detectors[MAX_DETECTORS][LOADER_ARGS_NAME_MAX];  /* 받은 이름들 (복사본) */
     const char *names[MAX_DETECTORS];                   /* detectors 의 각 칸을 가리킴 (dispatcher_select 에 그대로 넘긴다) */
@@ -91,8 +95,15 @@ static inline int loader_parse_args(int argc, char **argv, struct loader_args *o
             out->has_detectors = 1;
             if (loader_args_split(a + optlen, out, err, errlen) != 0)
                 return -1;
+        } else if (strcmp(a, LOADER_ARGS_NO_KILL_OPT) == 0) {
+            /* --no-kill 은 값 없이 정확히 이 글자만. 한 번만 (--no-kill=값 은 아래에서 모르는 옵션이 된다) */
+            if (out->no_kill) {
+                snprintf(err, errlen, "--no-kill 이 두 번 있음");
+                return -1;
+            }
+            out->no_kill = 1;
         } else if (a[0] == '-') {
-            /* 그 밖의 - 로 시작하는 인자는 모두 모르는 옵션 (--detectors 를 = 없이 쓴 경우, - 하나도 포함) */
+            /* 그 밖의 - 로 시작하는 인자는 모두 모르는 옵션 (--detectors 를 = 없이 쓴 경우, --no-kill=값, - 하나도 포함) */
             snprintf(err, errlen, "알 수 없는 옵션: %s (세션 루트는 - 로 시작할 수 없음)", a);
             return -1;
         } else if (a[0] == '\0') {

@@ -14,6 +14,11 @@
 #   scenarios/<이름>/run.sh        컨테이너 안에서 실행할 스크립트 (러너가 /bin/sh -c 로 넘김)
 #   scenarios/<이름>/expect.json   기대하는 세션 로그 (형식은 tools/judge.sh 의 설명 참고)
 #   scenarios/<이름>/host.sh       (선택) 컨테이너가 끝난 뒤 호스트에서 실행할 스크립트. 환경변수 MYC_UPPER 로 그 컨테이너의 upperdir 를 받는다
+#   scenarios/<이름>/runtime.json  (선택) 로그 밖의 기대: {"exit_code":137,"cgroup_gone":true,"map_entry_gone":true} (세 키 모두 선택)
+#                                  exit_code      : agent-run 의 종료 코드. 세션 폴더 meta.json 의 exit_code 도 같아야 한다
+#                                  cgroup_gone    : true 면 /sys/fs/cgroup/mycontainer-<세션 ID 끝 숫자> 가 없어야 한다 (false 는 검사 안 함)
+#                                  map_entry_gone : true 면 session_cgroups 맵에 그 세션의 cgroup_id 항목이 없어야 한다 (false 는 검사 안 함)
+#                                  알 수 없는 키, 잘못된 JSON, 타입 오류는 사전 점검에서 시작을 거부한다
 # 이름은 s 로 시작해야 한다. s00~s98 은 실제 시나리오, s99 는 더미 탐지기 검증용으로 예약해 둔다.
 #
 # ===== 러너가 하는 일 (순서) =====
@@ -58,12 +63,18 @@ SCEN_DIR="${MYC_SCEN_DIR:-$HERE/scenarios}"
 # 컨테이너 폴더(upperdir 이 있는 곳)의 부모. host.sh 스텝이 컨테이너가 쓴 파일을 찾을 때 쓴다. 테스트에서는 MYC_CONTAINERS_ROOT 로 바꾼다.
 CONTAINERS_ROOT="${MYC_CONTAINERS_ROOT:-/var/lib/mycontainer/containers}"
 JUDGE="$HERE/tools/judge.sh"
+# 런타임 검사가 "읽기만" 하는 경로와 도구. 테스트에서만 바꿔 끼운다 (tools/test_runner.sh).
+# 러너는 이 경로를 확인만 하고 쓰지 않는다. 세션을 종료하는 경로(src/loader/kill.c 의 /sys/fs/cgroup)는 컴파일 시점에 고정이라 영향이 없다.
+CHECK_CGROUP_ROOT="${MYC_CHECK_CGROUP_ROOT:-/sys/fs/cgroup}"              # cgroup_gone 이 확인할 cgroup 루트
+BPFTOOL="${MYC_BPFTOOL:-bpftool}"                                         # map_entry_gone 이 쓸 bpftool (이름이면 PATH 에서 찾는다)
+SESSION_CGROUPS_PIN="${MYC_SESSION_CGROUPS_PIN:-/sys/fs/bpf/session_cgroups}"  # 로더가 pin 하는 감시 맵 (watcher.bpf.c 의 LIBBPF_PIN_BY_NAME)
 
 # 대문자 이름의 변수는 "상수처럼 쓰는 설정값"이라는 관례이다 (쉘 문법상 특별한 것은 아니다). 필요하면 값만 조정한다.
 SETTLE_MS=500           # 이벤트 로그가 이 시간 동안 늘지 않으면 로더가 다 썼다고 본다
 SETTLE_MAX_S=10         # 이 시간을 넘겨도 안정되지 않으면 실패로 본다
 AGENT_TIMEOUT_S=60      # 시나리오 하나가 이 시간을 넘기면 중단한다
 READY_TIMEOUT_S=10      # 로더가 준비되기를 기다리는 최대 시간
+RUNTIME_TRIES=20        # cgroup 소멸, 맵 항목 소멸을 확인하는 최대 횟수 (0.1초 간격, 최대 약 2초)
 
 # 옵션 상태. KEEP=1 이면 성공해도 로그를 보관한다. FILTER 는 --only 로 받은 이름 패턴이다.
 KEEP=0
@@ -142,6 +153,41 @@ preflight() {
     fi
     [[ -d "$SCEN_DIR" ]] || errs+=("시나리오 폴더가 없다: $SCEN_DIR")
 
+    # 실행할 시나리오의 runtime.json 을 미리 검증한다. 오타로 검사가 조용히 빠지는 것을 막으려는 것이다.
+    # need_bpftool : map_entry_gone 을 쓰는 시나리오가 하나라도 있으면 1
+    local d rt need_bpftool=0
+    # 메인의 실행 반복문과 같은 규칙(s*/ 폴더, --only 패턴)으로 실행 대상만 고른다
+    for d in "$SCEN_DIR"/s*/; do
+        # 폴더가 아니면 건너뛴다 (맞는 것이 없으면 패턴이 글자 그대로 남는다)
+        [[ -d "$d" ]] || continue
+        # 끝의 / 를 뗀 경로
+        d="${d%/}"
+        # --only 패턴과 맞지 않으면 실행하지 않을 시나리오이므로 건너뛴다
+        # shellcheck disable=SC2053
+        if [[ -n "$FILTER" && "$(basename "$d")" != $FILTER ]]; then continue; fi
+        # runtime.json 이 있는 시나리오만 검증한다
+        rt="$d/runtime.json"
+        [[ -f "$rt" ]] || continue
+        # 객체이고, 아는 키만 있고, exit_code 는 0~255 정수, 나머지 둘은 true/false 여야 한다
+        if ! jq -e '
+              type == "object"
+              and ((keys - ["exit_code", "cgroup_gone", "map_entry_gone"]) | length == 0)
+              and ((has("exit_code") | not) or (.exit_code | type == "number" and . == floor and . >= 0 and . <= 255))
+              and ((has("cgroup_gone") | not) or (.cgroup_gone | type == "boolean"))
+              and ((has("map_entry_gone") | not) or (.map_entry_gone | type == "boolean"))
+            ' "$rt" >/dev/null 2>&1; then
+            # 무엇이 허용되는지 함께 알려 준다
+            errs+=("runtime.json 형식 오류: $rt (허용 키: exit_code 0~255 정수, cgroup_gone/map_entry_gone true|false)")
+            continue
+        fi
+        # map_entry_gone 이 true 이면 bpftool 이 필요하다
+        if jq -e '.map_entry_gone == true' "$rt" >/dev/null 2>&1; then need_bpftool=1; fi
+    done
+    # 맵 검사가 필요한데 bpftool 이 없으면 검사를 건너뛰지 않고 시작을 거부한다 (SKIP 은 가짜 통과가 된다)
+    if [[ $need_bpftool -eq 1 ]] && ! command -v "$BPFTOOL" >/dev/null 2>&1; then
+        errs+=("map_entry_gone 검사에 bpftool 이 필요하다: $BPFTOOL (sudo apt install bpftool 또는 linux-tools)")
+    fi
+
     # (( 수식 )) : 숫자 비교. ${#errs[@]} 는 배열 원소 개수이므로 "오류가 하나라도 모였으면" 이다.
     if ((${#errs[@]} > 0)); then
         echo "[preflight] 시작할 수 없다. 아래를 해결하라:" >&2
@@ -196,6 +242,130 @@ wait_settled() {
     return 1
 }
 
+# ---------------------------------------------------------------------------------------------
+# 런타임 검사: 로그 밖의 기대(runtime.json)를 확인한다. 모두 맞으면 0, 하나라도 어긋나면 1.
+# 어긋난 항목마다 한 줄씩 이유를 출력한다 (부르는 쪽이 들여써서 보여 준다).
+#   $1 runtime.json  $2 세션 ID  $3 agent-run 종료 코드  $4 cgroup_id (agent-run 출력에서 뽑은 값)  $5 세션 폴더
+# ---------------------------------------------------------------------------------------------
+run_runtime_checks() {
+    # 인자를 이름 있는 변수로 받는다. fails 는 어긋난 항목 수이다
+    local rt="$1" sid="$2" rc="$3" cgid="$4" sdir="$5" fails=0
+    # 이 함수 안에서 쓰는 변수들
+    local want meta_rc cgdir hex key b i dump n gone
+
+    # cgroup_id 를 못 뽑았으면 어떤 검사도 대상을 확정할 수 없으므로 바로 실패한다
+    if [[ ! "$cgid" =~ ^[0-9]+$ ]]; then
+        # 무엇을 기대했는지 알려 준다
+        echo "[런타임] cgroup_id 를 얻지 못함 (agent-run 출력의 \"cgroup_id=<숫자>\" 가 없거나 숫자가 아님: '$cgid')"
+        # 실패로 돌아간다
+        return 1
+    fi
+
+    # (a) 종료 코드. jq -r '.exit_code // empty' 는 키가 없으면 빈 문자열이다
+    want="$(jq -r '.exit_code // empty' "$rt")"
+    # 키가 있을 때만 검사한다
+    if [[ -n "$want" ]]; then
+        # agent-run 의 종료 코드가 기대와 같아야 한다
+        if [[ "$rc" != "$want" ]]; then
+            # 137 을 기대했으면 "죽지 않았다"는 뜻을 함께 알린다 (124 는 timeout 이 끊은 것)
+            if [[ "$want" == 137 ]]; then
+                echo "[런타임] 종료 코드 $rc: 137 아님 (세션이 cgroup.kill 로 종료되지 않았다. 124 는 timeout 이 끊은 것)"
+            else
+                echo "[런타임] 종료 코드 불일치: 기대 $want, 실제 $rc"
+            fi
+            # 어긋난 항목 수를 센다
+            fails=$((fails + 1))
+        fi
+        # meta.json 의 exit_code 가 같은 값으로 기록되었는지 교차 확인한다 (run_container.sh 가 끝날 때 쓴다)
+        # 파일이 없거나 JSON 이 깨지면 빈 문자열, 키가 없으면 "missing"
+        meta_rc="$(jq -r 'if has("exit_code") then (.exit_code | tostring) else "missing" end' "$sdir/meta.json" 2>/dev/null)"
+        # 세 경우를 나눠서 알린다
+        if [[ -z "$meta_rc" ]]; then
+            echo "[런타임] meta.json 을 읽지 못함: $sdir/meta.json"
+            fails=$((fails + 1))
+        elif [[ "$meta_rc" == missing ]]; then
+            echo "[런타임] meta.json 에 exit_code 가 없음: $sdir/meta.json"
+            fails=$((fails + 1))
+        elif [[ "$meta_rc" != "$rc" ]]; then
+            echo "[런타임] meta.json 의 exit_code $meta_rc 가 agent-run 종료 코드 $rc 와 다름"
+            fails=$((fails + 1))
+        fi
+    fi
+
+    # (b) cgroup 디렉토리 소멸. run_container.sh 가 끝날 때 rmdir 하므로 보통은 이미 없다. 짧게 다시 확인한다
+    if jq -e '.cgroup_gone == true' "$rt" >/dev/null 2>&1; then
+        # 세션 ID 끝의 숫자가 cgroup 이름의 숫자이다 (run_container.sh 의 mycontainer-$$)
+        cgdir="$CHECK_CGROUP_ROOT/mycontainer-${sid##*-}"
+        # 없어졌는지 표시
+        gone=0
+        # 0.1초 간격으로 최대 RUNTIME_TRIES 번 확인한다
+        for ((i = 0; i < RUNTIME_TRIES; i++)); do
+            # -e 는 있으면 참, -L 은 링크면 참. 둘 다 아니면 없어진 것이다
+            if [[ ! -e "$cgdir" && ! -L "$cgdir" ]]; then gone=1; break; fi
+            # 다음 확인까지 쉰다
+            sleep 0.1
+        done
+        # 끝까지 남아 있으면 실패
+        if [[ $gone -ne 1 ]]; then
+            echo "[런타임] cgroup 디렉토리가 남아 있음: $cgdir (${RUNTIME_TRIES}회 확인)"
+            fails=$((fails + 1))
+        fi
+    fi
+
+    # (c) session_cgroups 맵 항목 소멸. 로더가 kill(sent) 직후 지운다
+    if jq -e '.map_entry_gone == true' "$rt" >/dev/null 2>&1; then
+        # cgroup_id 를 16자리 16진수로 (8바이트)
+        hex="$(printf '%016x' "$cgid")"
+        # 리틀엔디안: 낮은 바이트부터. bpftool -j 의 key 배열과 같은 모양 ["0x85","0x1b",...] 으로 만든다
+        key="["
+        # 마지막 두 자리(가장 낮은 바이트)부터 앞으로 간다
+        for ((b = 7; b >= 0; b--)); do
+            # ${hex:시작:길이} 로 두 글자씩 자른다
+            key+="\"0x${hex:$((b * 2)):2}\""
+            # 마지막 원소가 아니면 쉼표
+            ((b > 0)) && key+=","
+        done
+        # 배열을 닫는다
+        key+="]"
+        # 없어졌는지 표시
+        gone=0
+        # 0.1초 간격으로 최대 RUNTIME_TRIES 번 확인한다
+        for ((i = 0; i < RUNTIME_TRIES; i++)); do
+            # 맵 전체를 JSON 으로 받는다. stderr 는 실패했을 때 보여 주려고 파일에 따로 둔다
+            dump="$("$BPFTOOL" -j map dump pinned "$SESSION_CGROUPS_PIN" 2>"$WORK/bpftool.err")"
+            # bpftool 자체가 실패하면 다시 시도하지 않고 바로 실패한다 (건너뛰면 가짜 통과가 된다)
+            if [[ $? -ne 0 ]]; then
+                echo "[런타임] bpftool 실패: $BPFTOOL -j map dump pinned $SESSION_CGROUPS_PIN ($(head -c 200 "$WORK/bpftool.err"))"
+                fails=$((fails + 1))
+                # 아래의 "끝까지 남음" 메시지를 내지 않도록 표시한다
+                gone=2
+                break
+            fi
+            # 원본 키 바이트(.key)로만 비교한다 ("formatted" 는 쓰지 않는다). 배열이 아니면 jq 가 실패한다
+            n="$(jq --argjson k "$key" 'if type == "array" then [.[] | select(.key == $k)] | length else error("배열 아님") end' <<<"$dump" 2>/dev/null)"
+            # JSON 이 깨졌으면 다시 시도하지 않고 바로 실패한다
+            if [[ ! "$n" =~ ^[0-9]+$ ]]; then
+                echo "[런타임] bpftool 출력을 해석하지 못함 (JSON 배열이 아님): $(head -c 200 <<<"$dump")"
+                fails=$((fails + 1))
+                gone=2
+                break
+            fi
+            # 항목이 없으면 통과 (빈 맵 [] 도 여기로 온다)
+            if [[ "$n" -eq 0 ]]; then gone=1; break; fi
+            # 아직 있으면 잠깐 쉬고 다시 확인한다
+            sleep 0.1
+        done
+        # 끝까지 남아 있으면 실패
+        if [[ $gone -eq 0 ]]; then
+            echo "[런타임] session_cgroups 에 cgroup_id $cgid 항목이 남아 있음 (key $key, ${RUNTIME_TRIES}회 확인)"
+            fails=$((fails + 1))
+        fi
+    fi
+
+    # 어긋난 항목이 하나라도 있으면 실패
+    ((fails == 0))
+}
+
 # 판정기의 탭 구분 출력을 사람이 읽기 좋게 바꿔 들여쓴다. 실패한 검사만 보여 준다 (--keep 이면 전부).
 print_judge() {
     # 이 함수는 표준 입력으로 판정기의 출력을 받는다 (부르는 쪽의 <<<"$out" 참고).
@@ -222,7 +392,7 @@ print_judge() {
 # ---------------------------------------------------------------------------------------------
 run_one() {
     # 반환값: 통과하면 return 0, 실패하면 return 1. 부르는 쪽이 if run_one ...; then 으로 성공/실패를 받는다.
-    local dir="$1" name script sid sdir events verdicts rc jr
+    local dir="$1" name script sid sdir events verdicts rc jr cgid rt_out rtr
     # basename 경로 : 경로의 마지막 부분 (폴더 이름). 예: .../scenarios/s99_dummy_block -> s99_dummy_block
     name="$(basename "$dir")"
 
@@ -259,6 +429,8 @@ run_one() {
     # head -1 : 첫 줄만 쓴다.
     # 이 때문에 agent-run 이 출력하는 "[*] 세션 시작: <ID> (cgroup_id=..." 형식에 의존한다 (위 "알려진 한계").
     sid="$(sed -n 's/^\[\*\] 세션 시작: \([^ ]*\) (cgroup_id=.*/\1/p' "$WORK/$name.agent.out" | head -1)"
+    # 같은 줄의 cgroup_id=<값> 도 뽑는다 (런타임 검사의 맵 키). 닫는 괄호 전까지가 값이다
+    cgid="$(sed -n 's/^\[\*\] 세션 시작: [^ ]* (cgroup_id=\([^)]*\)).*/\1/p' "$WORK/$name.agent.out" | head -1)"
     # =~ : 정규식 비교 (== 는 패턴 비교, =~ 는 정규식 비교).
     # ^[A-Za-z0-9._-]+$ 는 영문, 숫자, . _ - 로만 된 문자열이다. 세션 ID 에 이상한 글자가 있으면 경로로 쓰지 않는다.
     if [[ -z "$sid" || ! "$sid" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -334,12 +506,23 @@ run_one() {
     out="$("$JUDGE" "$sdir" "$dir/expect.json" 2>&1)"
     jr=$?
 
+    # 런타임 검사 (runtime.json 이 있을 때만). 판정 결과와 상관없이 실행해서 어긋난 것을 모두 보여 준다
+    # rtr 은 런타임 검사의 결과 (0 통과, 1 실패), rt_out 은 어긋난 항목의 설명이다
+    rtr=0
+    rt_out=""
+    if [[ -f "$dir/runtime.json" ]]; then
+        # 출력은 변수에 담고, 종료 코드는 바로 rtr 에 저장한다
+        rt_out="$(run_runtime_checks "$dir/runtime.json" "$sid" "$rc" "$cgid" "$sdir")"
+        rtr=$?
+    fi
+
     local nev nvd
     nev="$(count_lines "$events")"
     nvd="$(count_lines "$verdicts")"
 
     # -eq : 숫자가 같다. jr 이 0 이면 판정 통과.
-    if [[ $jr -eq 0 ]]; then
+    # 판정과 런타임 검사가 모두 통과해야 PASS 이다
+    if [[ $jr -eq 0 && $rtr -eq 0 ]]; then
         echo "[PASS] $name   (세션 $sid, 이벤트 $nev줄, 판정/대응 $nvd줄)"
         # <<<"$out" : 변수 내용을 print_judge 의 입력으로 넣는다 (here-string). --keep 이면 통과한 검사도 전부 보여 준다.
         [[ $KEEP -eq 1 ]] && print_judge 1 <<<"$out"
@@ -349,8 +532,13 @@ run_one() {
     echo "[FAIL] $name   (세션 $sid, 이벤트 $nev줄, 판정/대응 $nvd줄)"
     if [[ $jr -eq 2 ]]; then
         echo "        판정기 입력 오류: $out"
-    else
+    elif [[ $jr -ne 0 ]]; then
+        # 판정이 실패했을 때만 판정 내용을 보여 준다 (런타임 검사만 실패했으면 판정 쪽은 조용하다)
         print_judge 0 <<<"$out"
+    fi
+    # 런타임 검사가 실패했으면 어긋난 항목을 들여써서 보여 준다
+    if [[ $rtr -ne 0 ]]; then
+        sed 's/^/        /' <<<"$rt_out"
     fi
     # host.sh 스텝이 있었으면 그 출력 위치도 알려 준다 (실패 원인이 호스트 쪽에 있을 수 있다)
     [[ -f "$WORK/$name.host.out" ]] && echo "        호스트 스텝 출력: $WORK/$name.host.out"

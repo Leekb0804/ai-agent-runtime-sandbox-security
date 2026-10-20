@@ -14,6 +14,11 @@
 #   nolog  : 이벤트가 하나도 없는 세션 (로더가 아무것도 못 본 경우)
 #   slow   : 이벤트를 0.3초 간격으로 한 줄씩 늦게 쓴다 (러너가 다 쓸 때까지 기다리는지 확인)
 #   unattr : 세션 폴더 대신 _unattributed 에 쓴다 (by-cgroup 링크가 빠진 경우)
+#   killed : normal 처럼 로그를 쓰고, 세션이 cgroup.kill 로 죽은 것처럼 끝난다 (종료 코드 137, meta.json 에 exit_code 137)
+# 런타임 검사(runtime.json) 시험용 환경변수:
+#   MOCK_CGROUP_ID=N   : "세션 시작" 줄의 cgroup_id 값 (기본 1). 숫자가 아닌 값으로 "못 뽑는" 경우를 만든다
+#   MOCK_META=missing  : killed 에서 meta.json 에 exit_code 를 쓰지 않는다.  MOCK_META=wrong : exit_code 를 0 으로 쓴다
+#   MOCK_CG_LEFT=1     : MYC_CHECK_CGROUP_ROOT 아래에 mycontainer-<세션 번호> 디렉토리를 남긴다 (rmdir 실패를 흉내냄)
 
 # 이 스크립트가 있는 폴더 기준으로 ../fixtures 로 이동해 절대 경로를 얻는다 (run_scenarios.sh 의 HERE 와 같은 관용구).
 FIX="$(cd "$(dirname "$0")/../fixtures" && pwd)"
@@ -28,7 +33,13 @@ script="${*: -1}"                       # 마지막 인자가 스크립트
 sid="mock-$(date +%s%N)"
 
 # 진짜 agent-run 과 같은 형식의 한 줄을 출력한다. 러너가 sed 로 세션 ID 를 뽑는 바로 그 줄이다.
-echo "[*] 세션 시작: $sid (cgroup_id=1)"
+# cgroup_id 는 MOCK_CGROUP_ID 로 바꿀 수 있다 (기본 1)
+echo "[*] 세션 시작: $sid (cgroup_id=${MOCK_CGROUP_ID:-1})"
+# MOCK_CG_LEFT=1 이면 러너가 확인할 가짜 cgroup 루트 아래에 이 세션의 cgroup 디렉토리를 남긴다
+if [[ "${MOCK_CG_LEFT:-0}" == 1 ]]; then
+    # ${변수:?} : 루트가 지정되지 않았으면 진짜 /sys/fs/cgroup 에 만들지 않도록 여기서 멈춘다
+    mkdir -p "${MYC_CHECK_CGROUP_ROOT:?MOCK_CG_LEFT 에는 MYC_CHECK_CGROUP_ROOT 가 필요하다}/mycontainer-${sid##*-}"
+fi
 
 # MYC_CONTAINERS_ROOT 가 있으면 진짜 agent-run 처럼 컨테이너 폴더(mycontainer-<세션 번호>/upper/tmp)를 만든다.
 # 단 MOCK_NO_CONTAINER=1 이면 만들지 않는다 (컨테이너 폴더가 없는 경우를 재현하는 테스트용).
@@ -97,5 +108,23 @@ case "$mode" in
         cp "$src/events.jsonl" "$dest/events.jsonl"
         cp "$src/verdicts.jsonl" "$dest/verdicts.jsonl" ;;
 esac
+# killed : 진짜 run_container.sh 가 kill 된 세션 뒤에 하는 일을 흉내 낸다.
+#          meta.json 에 시작 필드와 끝 필드(ended_at, exit_code)를 쓰고 137 로 끝난다 (run_container.sh 의 jq 와 같은 필드).
+if [[ "$mode" == "killed" ]]; then
+    # 기록할 exit_code. MOCK_META=wrong 이면 일부러 다른 값(0)
+    meta_rc=137
+    [[ "${MOCK_META:-}" == wrong ]] && meta_rc=0
+    # 시작 때 쓰는 필드 (session_id, cgroup_id, started_at, command)
+    jq -n --arg sid "$sid" --arg start "$(date -Is)" --arg cmd "$script" \
+        '{session_id:$sid, cgroup_id:1, started_at:$start, command:$cmd}' >"$dest/meta.json"
+    # MOCK_META=missing 이 아니면 끝날 때의 필드를 덧붙인다
+    if [[ "${MOCK_META:-}" != missing ]]; then
+        # 같은 파일을 읽고 쓰지 않도록 임시 파일을 거친다
+        jq --arg end "$(date -Is)" --argjson rc "$meta_rc" '. + {ended_at:$end, exit_code:$rc}' "$dest/meta.json" >"$dest/meta.json.tmp"
+        mv "$dest/meta.json.tmp" "$dest/meta.json"
+    fi
+    # cgroup.kill 로 죽은 세션의 종료 코드 (128 + SIGKILL 9)
+    exit 137
+fi
 # 정상 종료 (진짜 agent-run 이 시나리오를 마친 것과 같다).
 exit 0

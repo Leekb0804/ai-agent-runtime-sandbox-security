@@ -1,0 +1,52 @@
+#!/bin/bash
+#
+# tools/mock/bpftool  -  가짜 bpftool (러너의 map_entry_gone 검사를 시험하려는 용도)
+#
+# 러너가 부르는 형태 하나만 흉내 낸다:  bpftool -j map dump pinned <pin 경로>
+# 그 밖의 인자로 불리면 오류로 끝난다 (러너가 다른 명령을 부르면 시험이 알아차리게).
+# MOCK_MAP (기본 absent):
+#   absent       : 빈 맵 "[]" (항목 없음). VM 확인: 빈 맵에서 진짜 bpftool -j map dump 는 [] 를 내고 rc=0
+#   present      : cgroup_id 400261 항목 하나 (진짜 bpftool -j 와 같은 모양)
+#                  VM 확인: 항목 1개 출력 [{"key":["0x6c","0xd2","0x05","0x00","0x00","0x00","0x00","0x00"],"value":["0x01"],"formatted":{"key":381548,"value":1}}]
+#   late         : 처음 MOCK_MAP_LATE_N 번(기본 3)은 present, 그 뒤에는 absent. 호출 횟수는 MOCK_MAP_COUNT 파일로 센다
+#   error        : stderr 에 메시지를 내고 종료 코드 1
+#   invalid_json : 종료 코드 0 이지만 JSON 이 아닌 출력
+
+# 인자 형태를 확인한다. $# 는 인자 개수, $1~$5 는 각 인자
+if [[ $# -ne 5 || "$1" != "-j" || "$2" != "map" || "$3" != "dump" || "$4" != "pinned" ]]; then
+    # 어떤 인자로 불렸는지 보여 주고 실패한다
+    echo "mock bpftool: 예상하지 못한 인자: $*" >&2
+    exit 2
+fi
+
+# cgroup_id 400261 (0x061b85) 항목. key 는 8바이트 리틀엔디안, value 는 __u8 1
+present='[{"key":["0x85","0x1b","0x06","0x00","0x00","0x00","0x00","0x00"],"value":["0x01"],"formatted":{"key":400261,"value":1}}]'
+
+# MOCK_MAP 에 따라 출력을 고른다. 없으면 absent
+case "${MOCK_MAP:-absent}" in
+    # 항목이 없는 맵
+    absent) echo '[]' ;;
+    # 항목이 있는 맵
+    present) echo "$present" ;;
+    # 늦게 사라지는 항목
+    late)
+        # 호출 횟수를 셀 파일. 지정되지 않았으면 시험 설정 오류로 끝난다
+        count_file="${MOCK_MAP_COUNT:?late 에는 MOCK_MAP_COUNT 가 필요하다}"
+        # 지금까지의 호출 횟수 (파일이 없거나 비었으면 0)
+        n="$(cat "$count_file" 2>/dev/null)"
+        n="${n:-0}"
+        # 이번 호출을 센다
+        n=$((n + 1))
+        echo "$n" >"$count_file"
+        # N 번째까지는 present, 그 뒤에는 absent
+        if ((n <= ${MOCK_MAP_LATE_N:-3})); then echo "$present"; else echo '[]'; fi
+        ;;
+    # bpftool 자체의 실패 (예: pin 경로가 없음, 권한 없음)
+    error) echo "Error: bpf obj get (/sys/fs/bpf): No such file or directory" >&2; exit 1 ;;
+    # 성공처럼 끝나지만 출력이 JSON 이 아님
+    invalid_json) echo 'not json' ;;
+    # 알 수 없는 모드는 시험 설정 오류
+    *) echo "mock bpftool: 알 수 없는 MOCK_MAP=${MOCK_MAP}" >&2; exit 2 ;;
+esac
+# 정상 종료
+exit 0

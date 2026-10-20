@@ -32,12 +32,17 @@ ln -s "$ROOT/scenarios/s00_benign" "$SCEN/s00_benign"
 ln -s "$ROOT/scenarios/s99_dummy_block" "$SCEN/s99_dummy_block"
 # 호스트 스텝 테스트가 컨테이너 폴더를 둘 임시 폴더 (mock agent-run 이 이 아래에 mycontainer-<번호>/upper 를 만든다)
 CONT="$(mktemp -d)"
+# 런타임 검사 테스트용: 가짜 cgroup 루트(러너가 cgroup_gone 으로 확인하는 곳)와 가짜 bpftool 의 호출 횟수 파일
+CGR="$(mktemp -d)"
+MAPCOUNT="$(mktemp)"
+# check 가 러너에 넘길 추가 인자 (예: --only 패턴). 기본은 없음
+RUNNER_ARGS=()
 
 failures=0
 # mktemp : 임시 "파일"을 만들고 경로를 출력한다 (-d 를 붙이면 폴더). 러너의 출력을 여기에 모아 두고 검사한다.
 OUT="$(mktemp)"
 # trap '명령' EXIT : 스크립트가 어떻게 끝나든 마지막에 그 명령을 실행한다. 여기서는 임시 파일을 지운다.
-trap 'rm -f "$OUT"; rm -rf "$SCEN" "$CONT"' EXIT
+trap 'rm -f "$OUT" "$MAPCOUNT"; rm -rf "$SCEN" "$CONT" "$CGR"' EXIT
 
 # 러너 출력(OUT 파일)에 "결과: FAILED" 줄이 있는지 확인한다. 있으면 참(0), 없으면 거짓(1)을 돌려준다.
 # 러너가 종료 코드 1 로 끝나는 exit 는 run_scenarios.sh 맨 끝 한 곳뿐이고 그 바로 앞에서 이 줄을 낸다.
@@ -60,7 +65,8 @@ check() {
     # env 변수=값 ... 명령 : 그 환경변수들을 지정해서 명령을 실행한다. "$@" 는 남은 인자 전체이다.
     # 즉 이 줄은 MYC_RUNNER_TEST=1 MYC_SRC_DIR=tools/mock MOCK_MODE=... ./run_scenarios.sh 와 같다.
     # 출력과 오류 출력은 모두 OUT 파일에 모은다 (>"$OUT" 2>&1). 바로 다음 줄에서 종료 코드를 got 에 저장한다.
-    env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MYC_CONTAINERS_ROOT="$CONT" "$@" "$RUNNER" >"$OUT" 2>&1
+    # "${RUNNER_ARGS[@]}" 는 러너에 줄 추가 인자이다 (런타임 검사 묶음에서만 --only 를 넣는다)
+    env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MYC_CONTAINERS_ROOT="$CONT" "$@" "$RUNNER" "${RUNNER_ARGS[@]}" >"$OUT" 2>&1
     got=$?
     # 러너의 종료 코드가 기대와 다르면 실패.
     if [[ "$got" != "$want" ]]; then
@@ -182,6 +188,72 @@ else
     echo "  FAIL  컨테이너 폴더가 없는 경우를 잡지 못함 (종료 코드 $got, 문구나 \"결과: FAILED\" 줄이 없을 수 있음)"; sed 's/^/        /' "$OUT"; failures=$((failures + 1))
 fi
 rm -rf "$SCEN/s_host"
+echo
+
+echo "[런타임 검사 (runtime.json: 종료 코드, cgroup 소멸, 맵 항목 소멸)]"
+# 임시 시나리오 s_rt 를 만든다. run.sh 에 trigger 가 있어서 mock 이 s99 로그를 쓰고, 기대(expect.json)도 s99 것을 쓴다.
+# 그래서 판정(judge)은 통과하고, 결과는 런타임 검사만으로 갈린다. 인자 $1 = runtime.json 의 내용
+make_rt_scn() {
+    # 이전 케이스가 남긴 폴더를 지우고 새로 만든다
+    rm -rf "$SCEN/s_rt"
+    mkdir -p "$SCEN/s_rt"
+    # 컨테이너 안에서 실행할 스크립트 (mock 은 내용 중 trigger 만 본다)
+    echo '/tmp/trigger; sleep 30' > "$SCEN/s_rt/run.sh"
+    # 판정 기대는 s99 와 같다
+    cp "$ROOT/scenarios/s99_dummy_block/expect.json" "$SCEN/s_rt/expect.json"
+    # 런타임 기대
+    printf '%s\n' "$1" > "$SCEN/s_rt/runtime.json"
+}
+# 이 묶음은 s_rt 하나만 실행한다
+RUNNER_ARGS=(--only s_rt)
+# 모든 케이스에 공통인 환경: 가짜 cgroup 루트, 가짜 bpftool, cgroup_id 400261 (가짜 bpftool 의 present 항목과 같은 값)
+RT_ENV=(MYC_CHECK_CGROUP_ROOT="$CGR" MYC_BPFTOOL="$HERE/mock/bpftool" MOCK_CGROUP_ID=400261)
+make_rt_scn '{"exit_code":137,"cgroup_gone":true,"map_entry_gone":true}'
+# 1: 세션이 죽었고, cgroup 이 없고, 맵 항목도 없다 -> 통과
+check "rt1 killed, cgroup 없음, 맵 항목 없음 -> 통과" 0 "${RT_ENV[@]}" MOCK_MODE=killed MOCK_MAP=absent
+# 2: 세션이 죽지 않았다 (mock normal 은 종료 코드 0, meta.json 없음)
+check "rt2 종료 코드 0 (죽지 않음) -> FAIL" 1 "${RT_ENV[@]}" MOCK_MODE=normal MOCK_MAP=absent
+expect_text "rt2 137 아님을 알림" "137 아님"
+# 3: 종료 코드는 137 인데 meta.json 의 exit_code 가 없거나 다르다
+check "rt3a meta.json 에 exit_code 없음 -> FAIL" 1 "${RT_ENV[@]}" MOCK_MODE=killed MOCK_META=missing MOCK_MAP=absent
+expect_text "rt3a 이유를 알림" "meta.json 에 exit_code 가 없음"
+check "rt3b meta.json 의 exit_code 가 다름 -> FAIL" 1 "${RT_ENV[@]}" MOCK_MODE=killed MOCK_META=wrong MOCK_MAP=absent
+expect_text "rt3b 이유를 알림" "meta.json 의 exit_code 0 가 agent-run 종료 코드 137 와 다름"
+# 4: cgroup 디렉토리가 남았다 (rmdir 실패 흉내)
+check "rt4 cgroup 디렉토리가 남음 -> FAIL" 1 "${RT_ENV[@]}" MOCK_MODE=killed MOCK_CG_LEFT=1 MOCK_MAP=absent
+expect_text "rt4 이유를 알림" "cgroup 디렉토리가 남아 있음"
+# 남긴 가짜 cgroup 디렉토리를 치운다 (다음 케이스에 영향이 없게)
+rm -rf "${CGR:?}"/mycontainer-*
+# 5: 맵 항목이 끝까지 남았다 -> 재시도를 다 쓰고 FAIL
+check "rt5 맵 항목이 끝까지 남음 -> FAIL" 1 "${RT_ENV[@]}" MOCK_MODE=killed MOCK_MAP=present
+expect_text "rt5 이유를 알림" "session_cgroups 에 cgroup_id 400261 항목이 남아 있음"
+# 6: 맵 항목이 3번 확인할 동안 남아 있다가 사라진다 (재시도 범위 안) -> 통과
+: >"$MAPCOUNT"
+check "rt6 맵 항목이 늦게 사라짐 (재시도 안) -> 통과" 0 "${RT_ENV[@]}" MOCK_MODE=killed MOCK_MAP=late MOCK_MAP_LATE_N=3 MOCK_MAP_COUNT="$MAPCOUNT"
+# 7: bpftool 이 실패하거나 출력이 JSON 이 아니면 건너뛰지 않고 FAIL
+check "rt7a bpftool 오류 -> FAIL (SKIP 아님)" 1 "${RT_ENV[@]}" MOCK_MODE=killed MOCK_MAP=error
+expect_text "rt7a 이유를 알림" "bpftool 실패"
+check "rt7b bpftool 출력이 JSON 아님 -> FAIL (SKIP 아님)" 1 "${RT_ENV[@]}" MOCK_MODE=killed MOCK_MAP=invalid_json
+expect_text "rt7b 이유를 알림" "bpftool 출력을 해석하지 못함"
+# 10: agent-run 출력에서 cgroup_id 를 뽑지 못함 -> FAIL
+check "rt10 cgroup_id 를 못 뽑음 -> FAIL" 1 "${RT_ENV[@]}" MOCK_MODE=killed MOCK_MAP=absent MOCK_CGROUP_ID=abc
+expect_text "rt10 이유를 알림" "cgroup_id 를 얻지 못함"
+# 8: map_entry_gone 이 있는데 bpftool 을 찾을 수 없음 -> 사전 점검에서 시작 거부 (종료 코드 2)
+check "rt8 bpftool 이 없음 -> 시작 거부" 2 "${RT_ENV[@]}" MYC_BPFTOOL=myc-no-such-bpftool MOCK_MODE=killed
+expect_text "rt8 이유를 알림" "map_entry_gone 검사에 bpftool 이 필요하다"
+# 9: runtime.json 이 틀렸다 -> 사전 점검에서 시작 거부 (오타로 검사가 조용히 빠지는 것을 막는다)
+make_rt_scn '{"exit_code":137,"cgroup_gon":true}'
+check "rt9a runtime.json 에 알 수 없는 키 -> 시작 거부" 2 "${RT_ENV[@]}" MOCK_MODE=killed
+expect_text "rt9a 이유를 알림" "runtime.json 형식 오류"
+make_rt_scn '{"exit_code":137,'
+check "rt9b runtime.json 이 깨진 JSON -> 시작 거부" 2 "${RT_ENV[@]}" MOCK_MODE=killed
+make_rt_scn '{"exit_code":"137"}'
+check "rt9c runtime.json 의 타입 오류 (exit_code 가 문자열) -> 시작 거부" 2 "${RT_ENV[@]}" MOCK_MODE=killed
+make_rt_scn '{"map_entry_gone":"yes"}'
+check "rt9d runtime.json 의 타입 오류 (map_entry_gone 이 문자열) -> 시작 거부" 2 "${RT_ENV[@]}" MOCK_MODE=killed
+# 정리: 임시 시나리오를 지우고 추가 인자를 비운다 (아래 케이스들은 기존대로 전체 시나리오를 돈다)
+rm -rf "$SCEN/s_rt"
+RUNNER_ARGS=()
 echo
 
 echo "[시작을 거부하는가 (종료 코드 2)]"

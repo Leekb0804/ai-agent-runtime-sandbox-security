@@ -40,11 +40,58 @@ LREC="$(mktemp)"
 # check 가 러너에 넘길 추가 인자 (예: --only 패턴). 기본은 없음
 RUNNER_ARGS=()
 
+# 러너가 만드는 작업 폴더(myc_scen.XXXXXX)를 모을 이 테스트 전용 폴더.
+# 러너는 실패하면 작업 폴더를 남기는데, 이 테스트는 일부러 실패 경로를 돌리므로 그대로 두면 /tmp 에 계속 쌓인다.
+# 그래서 러너에 MYC_SCEN_TMP 로 이 폴더를 주고, 끝날 때 이 폴더 하나만 지운다 (/tmp/myc_scen.* 를 glob 으로 지우지 않는다).
+# ${TMPDIR:-/tmp} : TMPDIR 가 있으면 그 아래, 없으면 /tmp 아래에 만든다
+SCENTMP="$(mktemp -d "${TMPDIR:-/tmp}/myc_trtmp.XXXXXX")"
+# 만들지 못했으면 정리할 대상도 정할 수 없으므로 바로 멈춘다
+[[ -n "$SCENTMP" && -d "$SCENTMP" ]] || { echo "[test_runner] 전용 임시 폴더를 만들지 못함" >&2; exit 2; }
+# export : 이 스크립트가 실행하는 모든 러너(check 와 풀어 쓴 호출 전부)에 이 값이 전달된다
+export MYC_SCEN_TMP="$SCENTMP"
+
+# 전용 폴더를 지운다. 안전장치를 모두 통과할 때만 rm -rf 하고, 하나라도 어긋나면 지우지 않고 이유를 알린 뒤 1 을 돌려준다.
+#   remove_scen_tmp <폴더>
+remove_scen_tmp() {
+    # 지울 폴더 (인자)
+    local d="${1-}"
+    # 빈 값이면 거부 (변수가 비어 rm -rf "" 나 엉뚱한 경로가 되는 것을 막는다)
+    if [[ -z "$d" ]]; then
+        echo "[test_runner] 정리 거부: 지울 폴더 변수가 비었음" >&2
+        return 1
+    fi
+    # / 이면 거부
+    if [[ "$d" == "/" ]]; then
+        echo "[test_runner] 정리 거부: / 는 지우지 않음" >&2
+        return 1
+    fi
+    # 이 실행이 만든 그 폴더여야 한다 (SCENTMP 와 글자 그대로 같아야 함)
+    if [[ "$d" != "$SCENTMP" ]]; then
+        echo "[test_runner] 정리 거부: 이 실행이 만든 폴더가 아님: $d" >&2
+        return 1
+    fi
+    # 이름이 mktemp 가 만든 형태(myc_trtmp. 뒤에 6글자)여야 한다. ${d##*/} 는 마지막 / 뒤의 이름
+    if [[ ! "${d##*/}" =~ ^myc_trtmp\.[A-Za-z0-9]{6}$ ]]; then
+        echo "[test_runner] 정리 거부: 이름이 mktemp 형태가 아님: $d" >&2
+        return 1
+    fi
+    # 이미 없으면 할 일이 없다 (두 번 불려도 오류 아님)
+    [[ -e "$d" ]] || return 0
+    # 링크가 아닌 진짜 폴더이고 내 소유여야 한다 (-L 링크, -d 폴더, -O 현재 사용자 소유)
+    if [[ -L "$d" || ! -d "$d" || ! -O "$d" ]]; then
+        echo "[test_runner] 정리 거부: 내 소유의 폴더가 아님: $d" >&2
+        return 1
+    fi
+    # 모든 검사를 통과했다. -- 뒤는 옵션이 아니라 경로라는 표시
+    rm -rf -- "$d"
+}
+
 failures=0
 # mktemp : 임시 "파일"을 만들고 경로를 출력한다 (-d 를 붙이면 폴더). 러너의 출력을 여기에 모아 두고 검사한다.
 OUT="$(mktemp)"
 # trap '명령' EXIT : 스크립트가 어떻게 끝나든 마지막에 그 명령을 실행한다. 여기서는 임시 파일을 지운다.
-trap 'rm -f "$OUT" "$MAPCOUNT" "$LREC"; rm -rf "$SCEN" "$CONT" "$CGR"' EXIT
+# 마지막의 remove_scen_tmp 는 러너 작업 폴더를 모은 전용 폴더를 지운다 (안전장치는 함수 안에 있다)
+trap 'rm -f "$OUT" "$MAPCOUNT" "$LREC"; rm -rf "$SCEN" "$CONT" "$CGR"; remove_scen_tmp "$SCENTMP"' EXIT
 
 # 러너 출력(OUT 파일)에 "결과: FAILED" 줄이 있는지 확인한다. 있으면 참(0), 없으면 거짓(1)을 돌려준다.
 # 러너가 종료 코드 1 로 끝나는 exit 는 run_scenarios.sh 맨 끝 한 곳뿐이고 그 바로 앞에서 이 줄을 낸다.
@@ -102,6 +149,24 @@ expect_text() {
         failures=$((failures + 1))
     fi
 }
+
+# 자체 점검 모드: 맨 아래 "[임시 폴더 정리]" 케이스가 이 스크립트를 MYC_TR_SELFTEST=1 로 한 번 더 실행할 때만 들어온다.
+# 실패하는 러너를 한 번 돌려 작업 폴더를 남기게 하고, 그 폴더가 전용 폴더 안에 실제로 있는지 출력한 뒤 바로 끝낸다.
+# 끝날 때 위의 trap 이 전용 폴더를 지워야 한다. 지워졌는지는 바깥(부른 쪽)이 확인한다 (자기 trap 의 결과는 스스로 볼 수 없어서).
+if [[ "${MYC_TR_SELFTEST:-0}" == 1 ]]; then
+    # 로그가 기대와 달라 종료 코드 1 로 끝나는 경로 -> 러너가 작업 폴더를 남긴다
+    env MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MYC_CONTAINERS_ROOT="$CONT" MOCK_MODE=wrong "$RUNNER" >"$OUT" 2>&1
+    # 러너가 알려 준 보관 위치 ("로그 보관: <경로>" 줄)
+    kept="$(sed -n 's/^로그 보관: //p' "$OUT")"
+    # 전용 폴더 경로와 러너 종료 코드를 바깥에 알린다
+    echo "selftest-dir=$SCENTMP"
+    echo "selftest-kept=$kept"
+    # 정리 직전에 둘 다 실제로 있는지 알린다 (없는데 "지워졌다"고 통과하는 것을 막는 단언용)
+    [[ -d "$SCENTMP" ]] && echo "selftest-dir-exists=1"
+    [[ -n "$kept" && -d "$kept" ]] && echo "selftest-kept-exists=1"
+    # 여기서 끝낸다. trap 이 정리한다
+    exit 0
+fi
 
 # check 는 가짜 구현(MYC_RUNNER_TEST=1 과 MYC_SRC_DIR=tools/mock 은 자동으로 붙는다)에 MOCK_MODE 를 바꿔 가며 러너를 실행한다.
 # MOCK_MODE 의 뜻은 tools/mock/run_container.sh 의 머리 주석 참고.
@@ -349,6 +414,74 @@ if [[ $got -eq 2 ]] && grep -qF "[preflight]" "$OUT"; then
 else
     echo "  FAIL  사전 점검이 동작하지 않음 (종료 코드 $got)"; sed 's/^/        /' "$OUT"; failures=$((failures + 1))
 fi
+
+echo "[임시 폴더 정리]"
+# 결과를 PASS/FAIL 한 줄로 내는 작은 도우미. ok 가 0 이면 PASS
+tmp_result() {
+    # 설명, 조건 결과(0 이면 참), 실패 때 덧붙일 내용
+    local msg="$1" ok="$2" extra="${3-}"
+    if [[ "$ok" -eq 0 ]]; then
+        printf '  PASS  %s\n' "$msg"
+    else
+        printf '  FAIL  %s %s\n' "$msg" "$extra"
+        failures=$((failures + 1))
+    fi
+}
+# tc1: 이 스크립트를 자체 점검 모드로 한 번 실행한다 (러너 1회 실패 -> 작업 폴더가 남음 -> 끝날 때 trap 이 전용 폴더를 지움)
+st_out="$(env MYC_TR_SELFTEST=1 bash "$HERE/test_runner.sh" 2>&1)"
+# 자식이 알려 준 전용 폴더와 보관 폴더
+st_dir="$(sed -n 's/^selftest-dir=//p' <<<"$st_out")"
+st_kept="$(sed -n 's/^selftest-kept=//p' <<<"$st_out")"
+# 정리 직전에 전용 폴더와 작업 폴더가 실제로 있었는가 (비어서 통과하는 것 방지)
+grep -qx 'selftest-dir-exists=1' <<<"$st_out" && grep -qx 'selftest-kept-exists=1' <<<"$st_out"
+tmp_result "tc1 정리 직전에 전용 폴더와 러너 작업 폴더가 실제로 있었음" $? "(자식 출력: $st_out)"
+# 러너 작업 폴더가 /tmp 바로 밑이 아니라 전용 폴더 안에 만들어졌는가 (${st_kept%/*} 는 마지막 / 앞까지 = 상위 폴더)
+[[ -n "$st_dir" && "${st_kept%/*}" == "$st_dir" && "${st_kept##*/}" == myc_scen.* ]]
+tmp_result "tc1 러너 작업 폴더가 전용 폴더 안에 생김 (밖에 남지 않음)" $? "(전용: '$st_dir', 작업: '$st_kept')"
+# 자식이 끝난 뒤 전용 폴더가 통째로 없어졌는가 (그 안의 작업 폴더도 함께)
+[[ -n "$st_dir" && ! -e "$st_dir" && ! -e "$st_kept" ]]
+tmp_result "tc1 끝나면 전용 폴더와 그 안의 작업 폴더가 지워짐" $? "(남은 것: $(ls -d "$st_dir" "$st_kept" 2>/dev/null | tr '\n' ' '))"
+# 정리를 거부한 메시지가 없어야 한다
+! grep -qF "정리 거부" <<<"$st_out"
+tmp_result "tc1 정리 거부 메시지 없음" $? "(자식 출력: $st_out)"
+# tc2: 안전장치. 지우면 안 되는 대상은 거부(1)하고 이유를 알려야 한다. 출력은 errf 에 모은다
+errf="$SCENTMP/tc2.err"
+remove_scen_tmp "" 2>"$errf"; rc=$?
+[[ $rc -eq 1 ]] && grep -qF "변수가 비었음" "$errf"
+tmp_result "tc2 빈 변수면 지우지 않고 거부" $? "(rc=$rc, $(cat "$errf"))"
+remove_scen_tmp "/" 2>"$errf"; rc=$?
+[[ $rc -eq 1 ]] && grep -qF "/ 는 지우지 않음" "$errf"
+tmp_result "tc2 / 이면 지우지 않고 거부" $? "(rc=$rc, $(cat "$errf"))"
+# 이름은 mktemp 형태지만 이 실행이 만든 폴더가 아닌 것 (전용 폴더 안에 만든 미끼)
+decoy="$SCENTMP/myc_trtmp.Decoy1"
+mkdir "$decoy"
+remove_scen_tmp "$decoy" 2>"$errf"; rc=$?
+[[ $rc -eq 1 && -d "$decoy" ]] && grep -qF "만든 폴더가 아님" "$errf"
+tmp_result "tc2 다른 폴더(이름이 비슷해도)는 지우지 않음" $? "(rc=$rc, $(cat "$errf"))"
+# 전용 폴더의 상위 폴더 (한 단계 위를 지우려는 실수)
+remove_scen_tmp "${SCENTMP%/*}" 2>"$errf"; rc=$?
+[[ $rc -eq 1 && -d "${SCENTMP%/*}" ]]
+tmp_result "tc2 상위 폴더는 지우지 않음" $? "(rc=$rc, $(cat "$errf"))"
+
+# tc3: 작업 폴더의 상위(MYC_SCEN_TMP)가 없는 폴더면 러너는 mktemp 실패를 알아채고 2 로 멈춰야 한다.
+# 멈추지 않으면 WORK 가 비어 SESS_ROOT 가 /sessions 가 되고 / 바로 밑에 폴더를 만들려 한다.
+# 없는 폴더는 전용 폴더 안의 이름으로 정한다 (만들지 않는다)
+missing_tmp="$SCENTMP/no_such_dir"
+# /sessions 가 이미 있으면 "생기지 않았다"를 판단할 수 없으므로 실행 전에 기록해 둔다
+pre_sessions=0; [[ -e /sessions ]] && pre_sessions=1
+# check 의 환경변수 인자로 주면 이 한 번의 실행에만 MYC_SCEN_TMP 가 바뀐다 (export 된 값은 그대로)
+check "tc3 작업 폴더를 만들지 못하면 시작 거부" 2 MOCK_MODE=normal MYC_SCEN_TMP="$missing_tmp"
+expect_text "tc3 이유를 알림" "[runner] 작업 폴더를 만들지 못함"
+# 작업 폴더 없이 다음 단계로 가지 않았어야 한다. 갔다면 / 바로 밑(/sessions, /loader.out)을 쓰려다 실패하거나 로더를 띄운다.
+# root 가 아니면 mkdir 이 경로 없이 "Permission denied" 만 찍고 폴더도 안 생기므로, 경로 대신 이런 흔적을 본다
+! grep -qE "Permission denied|\[loader\]|(^|[ '\"(:])/(sessions|loader\.)" "$OUT"
+tmp_result "tc3 작업 폴더 없이 다음 단계(/ 밑에 쓰기, 로더 시작)로 가지 않음 (출력)" $? "(출력: $(tr '\n' ' ' <"$OUT"))"
+# /sessions 가 실제로 생기지 않았어야 한다 (실행 전에 이미 있었으면 판단할 수 없으므로 실패로 알린다)
+[[ $pre_sessions -eq 0 && ! -e /sessions ]]
+tmp_result "tc3 /sessions 가 생기지 않음" $? "(실행 전부터 있었음=$pre_sessions)"
+# 다음 케이스들에 영향이 없는지: export 된 값이 전용 폴더 그대로인가
+[[ "$MYC_SCEN_TMP" == "$SCENTMP" ]]
+tmp_result "tc3 다른 케이스의 MYC_SCEN_TMP 는 그대로" $? "(지금 값: $MYC_SCEN_TMP)"
 
 echo
 # 마지막: 실패한 케이스가 없으면 종료 코드 0, 있으면 1.

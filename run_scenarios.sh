@@ -557,7 +557,14 @@ run_one() {
 preflight
 
 # mktemp -d : 임시 폴더를 새로 만들고 그 경로를 출력한다. XXXXXX 는 무작위 글자로 바뀐다 (실행할 때마다 다른 폴더).
-WORK="$(mktemp -d /tmp/myc_scen.XXXXXX)"
+# 작업 폴더의 상위는 평소 /tmp 이다. 테스트(tools/test_runner.sh)만 MYC_SCEN_TMP 로 자기 전용 폴더를 준다 (끝날 때 그 폴더만 지우려고).
+WORK="$(mktemp -d "${MYC_SCEN_TMP:-/tmp}/myc_scen.XXXXXX")"
+# mktemp 가 실패하면 (예: MYC_SCEN_TMP 가 없는 폴더) WORK 가 비어 아래 경로가 / 바로 밑을 가리키게 된다. 그 전에 멈춘다
+if [[ -z "$WORK" ]]; then
+    # 이유를 알리고 시작하지 않는다 (아직 로더를 띄우기 전이라 정리할 것이 없다)
+    echo "[runner] 작업 폴더를 만들지 못함 (상위: ${MYC_SCEN_TMP:-/tmp}). 시작하지 않는다" >&2
+    exit 2
+fi
 SESS_ROOT="$WORK/sessions"
 # mkdir -p : 중간 폴더까지 한 번에 만들고, 이미 있어도 오류 없이 넘어간다.
 # by-cgroup 은 "cgroup id -> 세션 ID" 링크가 들어갈 폴더이다 (4일차 내용).

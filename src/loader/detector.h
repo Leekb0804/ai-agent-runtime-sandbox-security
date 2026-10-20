@@ -98,6 +98,13 @@ struct detector {
     int (*on_event)(const struct event_hdr *h, size_t len, struct verdict *out);
 
     /*
+     * 1 이면 시험용 탐지기(더미 등). 로더를 --detectors 없이 실행하면 켜지지 않는다.
+     * 러너처럼 필요한 쪽이 --detectors=이름 으로 명시해야 켜진다 (dispatcher_select 참고).
+     * 적지 않으면 0 (운영 탐지기).
+     */
+    int test_only;
+
+    /*
      * 아래 두 필드는 디스패처가 관리하는 런타임 상태다. 탐지기 파일에서는 값을 적지 않는다.
      * (static 변수로 선언한 구조체는 지정하지 않은 필드가 자동으로 0 이 된다)
      */

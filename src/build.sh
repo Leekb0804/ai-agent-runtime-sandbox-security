@@ -32,7 +32,7 @@ LOG_SRCS="loader/dispatcher.c loader/json_escape.c loader/jsonl.c loader/session
 KILL_SRCS="loader/kill.c loader/kill_cgroup.c"
 COMMON_SRCS="$LOG_SRCS $KILL_SRCS loader/verdict_handler.c"
 
-echo "[1/9] eBPF 오브젝트 (clang)"
+echo "[1/10] eBPF 오브젝트 (clang)"
 # -g                       : 디버그 정보 포함 (BTF 생성에 필요)
 # -O2                      : 최적화. eBPF 는 최적화 없이는 verifier 를 통과하지 못하는 경우가 많다
 # -target bpf              : BPF 바이트코드로 컴파일
@@ -42,10 +42,10 @@ echo "[1/9] eBPF 오브젝트 (clang)"
 clang -g -O2 -target bpf -D__TARGET_ARCH_arm64 -I bpf \
       -Wno-missing-declarations -c bpf/watcher.bpf.c -o watcher.bpf.o
 
-echo "[2/9] skeleton 생성"
+echo "[2/10] skeleton 생성"
 bpftool gen skeleton watcher.bpf.o > watcher.skel.h
 
-echo "[3/9] 로더 (myc_loader)"
+echo "[3/10] 로더 (myc_loader)"
 # detectors/*.c 는 셸 와일드카드로 그 디렉토리의 모든 .c 로 확장된다.
 # 탐지기 파일을 추가하는 것만으로 빌드에 포함된다 (스크립트 수정 불필요).
 #
@@ -58,37 +58,42 @@ gcc -Wall -Wextra -I. -Iloader -o myc_loader \
     loader/loader.c $COMMON_SRCS loader/detectors/*.c \
     -lbpf -lelf -lz
 
-echo "[4/9] 단위 테스트: 디스패처 (test_dispatcher)"
+echo "[4/10] 단위 테스트: 디스패처 (test_dispatcher)"
 # 검증 대상만 링크. 실제 탐지기(detectors/*.c)는 섞지 않는다 (테스트용 탐지기를 직접 등록).
 gcc -Wall -Wextra -I. -Iloader -o test_dispatcher \
     loader/test_dispatcher.c loader/dispatcher.c loader/json_escape.c
 
-echo "[5/9] 단위 테스트: 판정 처리와 세션 로그 (test_verdict_handler)"
+echo "[5/10] 단위 테스트: 판정 처리와 세션 로그 (test_verdict_handler)"
 # 이 테스트도 커널과 libbpf 가 필요 없다. 임시 디렉토리에 가짜 세션을 만들어 검증한다.
 # kill.c 대신 테스트 파일 안의 가짜 kill_session 을 쓴다 (결과를 정해 둘 수 있고, 진짜 cgroup 에 닿지 않는다).
 gcc -Wall -Wextra -I. -Iloader -o test_verdict_handler \
     loader/test_verdict_handler.c $LOG_SRCS loader/verdict_handler.c
 
-echo "[6/9] 단위 테스트: write_exec_boundary 탐지기 (test_write_exec_boundary)"
+echo "[6/10] 단위 테스트: write_exec_boundary 탐지기 (test_write_exec_boundary)"
 # 실제 탐지기 파일 하나만 링크한다 (생성자로 자동 등록됨). 다른 탐지기를 섞으면 판정이 달라진다.
 gcc -Wall -Wextra -I. -Iloader -o test_write_exec_boundary \
     loader/test_write_exec_boundary.c loader/dispatcher.c loader/detectors/write_exec_boundary.c
 
-echo "[7/9] 단위 테스트: 로더 잠금 (test_loader_lock)"
+echo "[7/10] 단위 테스트: 로더 잠금 (test_loader_lock)"
 # 커널 프로그램, libbpf, sudo 가 필요 없다. 임시 폴더에서 flock 잠금의 생존 확인을 검증한다.
 gcc -Wall -Wextra -I. -Iloader -o test_loader_lock \
     loader/test_loader_lock.c
 
-echo "[8/9] 단위 테스트: 세션 cgroup 종료 (test_kill)"
+echo "[8/10] 단위 테스트: 세션 cgroup 종료 (test_kill)"
 # 세션 로그와 libbpf 에 의존하지 않는 kill_cgroup.c 만 링크한다. 임시 폴더를 가짜 cgroup 루트로 쓴다.
 gcc -Wall -Wextra -I. -Iloader -o test_kill \
     loader/test_kill.c loader/kill_cgroup.c
 
-echo "[9/9] 단위 테스트: kill 결과 기록과 감시 해제 (test_kill_session)"
+echo "[9/10] 단위 테스트: kill 결과 기록과 감시 해제 (test_kill_session)"
 # 진짜 kill.c 와 세션 로그를 링크하고, 가짜 cgroup 루트를 kill_session_at 으로 넘긴다.
 # --wrap=kill_cgroup_at : kill.c 의 kill_cgroup_at 호출이 테스트의 __wrap_kill_cgroup_at 으로 가게 한다
 #                         (불렸는지 세고 진짜 함수 __real_kill_cgroup_at 을 부른다).
 gcc -Wall -Wextra -I. -Iloader -o test_kill_session \
     loader/test_kill_session.c $LOG_SRCS $KILL_SRCS -Wl,--wrap=kill_cgroup_at
 
-echo "빌드 완료. 테스트: ./test_dispatcher && ./test_verdict_handler && ./test_write_exec_boundary && ./test_loader_lock && ./test_kill && ./test_kill_session  /  실행: sudo ./myc_loader"
+echo "[10/10] 단위 테스트: 로더 인자 해석 (test_loader_args)"
+# 헤더(loader_args.h) 하나만 검증한다. MAX_DETECTORS 를 쓰려고 dispatcher.h 를 include 하지만 dispatcher.c 는 링크하지 않는다.
+gcc -Wall -Wextra -I. -Iloader -o test_loader_args \
+    loader/test_loader_args.c
+
+echo "빌드 완료. 테스트: ./test_dispatcher && ./test_verdict_handler && ./test_write_exec_boundary && ./test_loader_lock && ./test_kill && ./test_kill_session && ./test_loader_args  /  실행: sudo ./myc_loader (더미 탐지기는 --detectors 로 명시해야 켜짐)"

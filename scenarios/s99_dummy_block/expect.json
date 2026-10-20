@@ -23,7 +23,7 @@
     },
     {
       "note": "같은 이벤트(/tmp/trigger 실행)에 대한 다른 탐지기의 판정도 남는다 (BLOCK 과 종료가 같은 이벤트의 나머지 판정을 막지 않음)",
-      "match": { "type": "verdict", "level": "SUSPECT", "filename": "/tmp/trigger" },
+      "match": { "type": "verdict", "level": "SUSPECT", "detector": "dummy_suspect", "filename": "/tmp/trigger" },
       "min": 1
     }
   ]

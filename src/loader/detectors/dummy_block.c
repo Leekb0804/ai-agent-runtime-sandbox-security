@@ -51,6 +51,7 @@ static struct detector det = {
     .name = "dummy_block",
     .kinds = KIND_BIT(EVT_EXEC),
     .on_event = on_event,
+    .test_only = 1,                                    /* 시험용. 기본 목록에서 빠지고 --detectors 로만 켠다 */
 };
 
 /* main() 이전에 자동 호출되어 디스패처에 등록한다 (자세한 설명은 dummy_suspect.c 참고). */

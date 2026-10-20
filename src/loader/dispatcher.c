@@ -11,7 +11,8 @@
  * (docs 의 "수용한 한계"에 기록할 것)
  */
 #include <stdio.h>
-#include <string.h>               /* memset */
+#include <stdlib.h>               /* qsort */
+#include <string.h>               /* memset, strcmp */
 #include "dispatcher.h"
 
 /*
@@ -78,6 +79,108 @@ void dispatcher_print_detectors(FILE *out)
     fprintf(out, "[dispatcher] 등록된 탐지기 %d개\n", g_detector_count);
     for (int i = 0; i < g_detector_count; i++)
         fprintf(out, "  - %s (kinds=0x%08x)\n", g_detectors[i]->name, g_detectors[i]->kinds);
+}
+
+/* names 의 앞 n 개 안에 name 이 있는가 */
+static int name_in(const char *name, const char *const *names, int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (strcmp(names[i], name) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* 등록된 탐지기 중 이름이 name 인 것이 있는가 */
+static int registered(const char *name)
+{
+    for (int i = 0; i < g_detector_count; i++) {
+        if (strcmp(g_detectors[i]->name, name) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* 탐지기 d 를 남길까: 이름 목록이 있으면 목록에 있는 것, 없으면(기본) 시험용이 아닌 것 */
+static int keep_detector(const struct detector *d, const char *const *names, int n)
+{
+    if (names != NULL && n > 0)
+        return name_in(d->name, names, n);
+    return !d->test_only;
+}
+
+/*
+ * 켤 탐지기 고르기. 먼저 전부 검사하고, 문제가 없을 때만 목록을 바꾼다 (거부하면 그대로 둔다).
+ * 목록을 줄일 때는 남길 것만 앞으로 당겨 담으므로 등록 순서가 유지된다.
+ */
+int dispatcher_select(const char *const *names, int n, char *err, size_t errlen)
+{
+    int use_list = (names != NULL && n > 0);
+
+    if (use_list) {
+        for (int i = 0; i < n; i++) {
+            /* 이름 목록에 같은 이름이 두 번 있으면 거부 (실수일 가능성이 높고, 결과도 모호하다) */
+            if (name_in(names[i], names, i)) {
+                snprintf(err, errlen, "같은 탐지기 이름이 두 번 있음: %s", names[i]);
+                return -1;
+            }
+            /* 등록되지 않은 이름이면 거부 (오타로 탐지기가 조용히 빠지는 것을 막는다) */
+            if (!registered(names[i])) {
+                snprintf(err, errlen, "등록되지 않은 탐지기 이름: %s", names[i]);
+                return -1;
+            }
+        }
+    }
+
+    /* 남을 탐지기 수를 먼저 센다. 0 개면 판정이 하나도 안 나오는데 정상처럼 보이므로 거부한다 */
+    int keep = 0;
+    for (int i = 0; i < g_detector_count; i++) {
+        if (keep_detector(g_detectors[i], names, n))
+            keep++;
+    }
+    if (keep == 0) {
+        snprintf(err, errlen, "켤 탐지기가 없음 (%s)",
+                 use_list ? "이름 목록" : "기본 선택: 시험용이 아닌 탐지기가 없음");
+        return -1;
+    }
+
+    /* 남길 것만 앞으로 당긴다. j 는 다음에 담을 자리 */
+    int j = 0;
+    for (int i = 0; i < g_detector_count; i++) {
+        if (keep_detector(g_detectors[i], names, n))
+            g_detectors[j++] = g_detectors[i];
+    }
+    g_detector_count = j;
+    return 0;
+}
+
+/* qsort 비교 함수: 탐지기 이름 포인터 둘을 strcmp 로 비교한다 */
+static int cmp_name(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+int dispatcher_selected_names(char *buf, size_t len)
+{
+    const char *sorted[MAX_DETECTORS];
+    for (int i = 0; i < g_detector_count; i++)
+        sorted[i] = g_detectors[i]->name;
+    qsort(sorted, (size_t)g_detector_count, sizeof(sorted[0]), cmp_name);
+
+    size_t used = 0;
+    if (len == 0)
+        return -1;
+    buf[0] = '\0';
+    for (int i = 0; i < g_detector_count; i++) {
+        /* 두 번째부터는 앞에 쉼표를 붙인다. snprintf 가 돌려주는 값은 "쓰려고 한" 길이다 */
+        int w = snprintf(buf + used, len - used, "%s%s", i ? "," : "", sorted[i]);
+        if (w < 0 || (size_t)w >= len - used) {
+            buf[0] = '\0';
+            return -1;
+        }
+        used += (size_t)w;
+    }
+    return 0;
 }
 
 void dispatcher_set_sink(verdict_sink_fn fn, void *ctx)

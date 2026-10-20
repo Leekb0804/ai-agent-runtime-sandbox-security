@@ -368,6 +368,104 @@ static void test_register_overflow(void)
     dispatcher_reset_for_test();          /* 다음 테스트로 오류가 새지 않게 되돌림 */
 }
 
+/* ===================== 테스트: 탐지기 선택 (dispatcher_select) ===================== */
+
+/* 판정을 낸 탐지기 이름을 도착 순서대로 "a,b," 처럼 이어 붙인다 (분배 순서 확인용) */
+static char order_buf[256];
+static void order_sink(const struct event_hdr *h, size_t len, const struct verdict *v, void *ctx)
+{
+    (void)h; (void)len; (void)ctx;
+    snprintf(order_buf + strlen(order_buf), sizeof(order_buf) - strlen(order_buf), "%s,", v->detector);
+}
+
+/* 이름이 서로 다른 탐지기 넷: 운영 둘(zeta, alpha), 시험용 둘(t_b, t_a). 모두 EXEC 를 받고 SUSPECT 를 낸다 */
+static struct detector sel_zeta  = { .name = "zeta",  .kinds = KIND_BIT(EVT_EXEC), .on_event = always_ok };
+static struct detector sel_tb    = { .name = "t_b",   .kinds = KIND_BIT(EVT_EXEC), .on_event = always_ok, .test_only = 1 };
+static struct detector sel_alpha = { .name = "alpha", .kinds = KIND_BIT(EVT_EXEC), .on_event = always_ok };
+static struct detector sel_ta    = { .name = "t_a",   .kinds = KIND_BIT(EVT_EXEC), .on_event = always_ok, .test_only = 1 };
+
+/* 레지스트리를 비우고 넷을 이 순서로 등록한다: zeta, t_b, alpha, t_a */
+static void register_four(void)
+{
+    dispatcher_reset_for_test();
+    reset_counters();
+    register_detector(&sel_zeta);
+    register_detector(&sel_tb);
+    register_detector(&sel_alpha);
+    register_detector(&sel_ta);
+    dispatcher_set_sink(order_sink, NULL);
+}
+
+/* EXEC 하나를 분배하고 판정이 온 순서를 돌려준다 */
+static const char *dispatch_order(void)
+{
+    order_buf[0] = '\0';
+    struct evt_exec e = make_exec("/bin/ls");
+    dispatch_event(&e, sizeof(e));
+    return order_buf;
+}
+
+/* 목록 출력을 문자열로 받는다. 호출한 쪽이 free */
+static char *printed(void)
+{
+    char *buf = NULL;
+    size_t sz = 0;
+    FILE *f = open_memstream(&buf, &sz);
+    dispatcher_print_detectors(f);
+    fclose(f);
+    return buf;
+}
+
+static void test_select(void)
+{
+    printf("[탐지기 선택]\n");
+    char err[128], names[256];
+    char *p;
+
+    /* 1. 기본 선택: 시험용이 빠지고 운영 둘만 등록 순서대로 남는다 */
+    register_four();
+    CHECK(dispatcher_select(NULL, 0, err, sizeof(err)) == 0, "select_default_ok");
+    CHECK(strcmp(dispatch_order(), "zeta,alpha,") == 0, "select_default_excludes_test_only");
+    p = printed();
+    CHECK(strstr(p, "2개") && !strstr(p, "t_a") && !strstr(p, "t_b"), "select_default_print_shows_only_selected");
+    free(p);
+    CHECK(dispatcher_selected_names(names, sizeof(names)) == 0 && strcmp(names, "alpha,zeta") == 0,
+          "selected_names_sorted_default");
+
+    /* 2. 이름 지정: 시험용도 켤 수 있고, 남는 순서는 목록 순서가 아니라 등록 순서이다 */
+    register_four();
+    const char *pick[] = { "t_a", "zeta", "t_b" };
+    CHECK(dispatcher_select(pick, 3, err, sizeof(err)) == 0, "select_list_ok");
+    CHECK(strcmp(dispatch_order(), "zeta,t_b,t_a,") == 0, "select_list_keeps_registration_order");
+    CHECK(dispatcher_selected_names(names, sizeof(names)) == 0 && strcmp(names, "t_a,t_b,zeta") == 0,
+          "selected_names_sorted_list");
+
+    /* 3. 모르는 이름은 거부하고 목록을 바꾸지 않는다 */
+    register_four();
+    const char *unknown[] = { "zeta", "nope" };
+    CHECK(dispatcher_select(unknown, 2, err, sizeof(err)) == -1 && strstr(err, "nope"), "select_rejects_unknown_name");
+    CHECK(strcmp(dispatch_order(), "zeta,t_b,alpha,t_a,") == 0, "select_reject_leaves_registry_unchanged");
+
+    /* 4. 같은 이름 두 번은 거부 */
+    register_four();
+    const char *dup[] = { "alpha", "alpha" };
+    CHECK(dispatcher_select(dup, 2, err, sizeof(err)) == -1 && strstr(err, "alpha"), "select_rejects_duplicate_name");
+
+    /* 5. 결과 0개는 거부: 시험용만 등록된 상태에서 기본 선택 */
+    dispatcher_reset_for_test();
+    register_detector(&sel_tb);
+    register_detector(&sel_ta);
+    CHECK(dispatcher_select(NULL, 0, err, sizeof(err)) == -1, "select_rejects_zero_result");
+
+    /* 6. buf 가 모자라면 실패하고 빈 문자열 */
+    register_four();
+    dispatcher_select(NULL, 0, err, sizeof(err));
+    char small[5];
+    CHECK(dispatcher_selected_names(small, sizeof(small)) == -1 && small[0] == '\0', "selected_names_too_small");
+
+    dispatcher_reset_for_test();          /* 다음 테스트로 상태가 새지 않게 되돌림 */
+}
+
 /* ===================== 테스트 4: JSON 이스케이프 ===================== */
 static void test_json_escape(void)
 {
@@ -422,6 +520,7 @@ int main(void)
     test_error_isolation();
     test_register_validation();
     test_register_overflow();
+    test_select();
     test_json_escape();
 
     printf("\n%s (실패 %d)\n", failures ? "FAILED" : "ALL PASSED", failures);

@@ -50,6 +50,7 @@ static struct detector det = {
     .name = "dummy_suspect",
     .kinds = KIND_BIT(EVT_EXEC),                      /* EXEC 이벤트만 구독 */
     .on_event = on_event,
+    .test_only = 1,                                    /* 시험용. 기본 목록에서 빠지고 --detectors 로만 켠다 */
 };
 
 /*

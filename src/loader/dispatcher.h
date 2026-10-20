@@ -77,4 +77,21 @@ int dispatcher_registration_errors(void);
 /* 등록된 탐지기 목록을 out 에 출력한다 */
 void dispatcher_print_detectors(FILE *out);
 
+/*
+ * 켤 탐지기를 고른다. 로더가 main 에서 등록 확인 뒤, 분배를 시작하기 전에 한 번 부른다.
+ *   names == NULL 또는 n == 0 : test_only 가 아닌 탐지기만 남긴다 (기본)
+ *   이름 목록                  : 그 목록의 탐지기만 남긴다 (test_only 도 이름으로 켤 수 있다)
+ * 선택되지 않은 탐지기는 목록에서 빠져서 출력과 분배 모두에서 사라진다. 남은 것은 등록 순서를 유지한다.
+ * 모르는 이름, 같은 이름 두 번, 결과 0개는 거부한다. 거부하면 목록을 바꾸지 않고 err 에 이유를 쓴다.
+ * 반환: 0 성공, -1 거부
+ */
+int dispatcher_select(const char *const *names, int n, char *err, size_t errlen);
+
+/*
+ * 지금 켜져 있는 탐지기 이름을 알파벳순(strcmp 순)으로 쉼표로 이어 buf 에 쓴다. 예: "a,b,c"
+ * 로더의 ready 줄에 찍고 러너가 기대 목록과 비교한다.
+ * 반환: 0 성공, -1 buf 가 모자람 (buf 는 빈 문자열이 된다)
+ */
+int dispatcher_selected_names(char *buf, size_t len);
+
 #endif /* DISPATCHER_H */

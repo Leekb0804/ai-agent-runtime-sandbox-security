@@ -26,9 +26,14 @@ AI 코딩 에이전트에게 셸 실행 권한을 줄 때, 애플리케이션 �
 
 ```bash
 cd src && ./build.sh                                  # 빌드 (eBPF 오브젝트, 로더, 단위 테스트)
-sudo ./myc_loader                                     # 터미널 1: 감시자를 먼저 띄운다
+sudo ./myc_loader                                     # 터미널 1: 감시자를 먼저 띄운다 (시험용 더미 탐지기는 꺼진 상태)
 sudo ./run_container.sh agent-run -- /bin/sh -c '/bin/ls /'   # 터미널 2: 세션 실행
 ```
+
+로더 인자: `myc_loader [세션 루트] [--detectors=이름,이름,...]` (순서 상관없음).
+`--detectors` 를 생략하면 시험용이 아닌 탐지기(`write_exec_boundary`)만 켭니다. 더미 탐지기는 이름으로 명시해야 켜집니다
+(예: `sudo ./myc_loader --detectors=dummy_block,dummy_suspect,write_exec_boundary`. 러너는 이 목록으로 띄웁니다).
+켜진 목록과 모드는 시작할 때 `[loader] ready (... mode: kill, detectors: ...)` 줄에 나옵니다. 잘못된 인자는 시작하지 않고 종료 코드 2 로 끝납니다.
 
 세션 로그는 `/var/lib/mycontainer/sessions/<세션ID>/` 의 `events.jsonl`, `verdicts.jsonl` 에 남습니다.
 로그 형식은 [docs/log-schema-draft.md](docs/log-schema-draft.md) 를 참고하세요.

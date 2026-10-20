@@ -25,8 +25,12 @@
  *                               -> dispatch_event -> 탐지기들 -> handle_verdict
  *                                                       -> verdicts.jsonl (+ BLOCK 이면 kill_session)
  *
- * 실행: sudo ./myc_loader [세션 루트 디렉토리]
- *       (생략하면 /var/lib/mycontainer/sessions)
+ * 실행: sudo ./myc_loader [세션 루트 디렉토리] [--detectors=이름,이름,...]
+ *       세션 루트를 생략하면 /var/lib/mycontainer/sessions. 옵션과 세션 루트의 순서는 상관없다.
+ *       --detectors 를 생략하면 시험용(test_only)이 아닌 탐지기만 켠다. 더미 탐지기는 이름으로 명시해야 켜진다
+ *       (예: 러너는 --detectors=dummy_block,dummy_suspect,write_exec_boundary).
+ *       잘못된 인자(모르는 옵션, 모르는 탐지기 이름 등)는 BPF 를 올리기 전에 거부하고 종료 코드 2 로 끝난다.
+ *       준비되면 stderr 에 "[loader] ready (sessions root: <루트>, mode: kill, detectors: <알파벳순 목록>)" 를 낸다.
  * 이 로더는 agent-run 보다 먼저 떠 있어야 한다 (session_cgroups map 이 있어야 cgroup 등록이 된다).
  */
 #include <stdio.h>
@@ -46,8 +50,10 @@
 #include "verdict_handler.h"
 #include "kill.h"
 #include "loader_lock.h"
+#include "loader_args.h"
 
 #define DEFAULT_SESSIONS_ROOT "/var/lib/mycontainer/sessions"
+#define USAGE "사용법: myc_loader [세션 루트] [--detectors=이름,이름,...]"
 
 /*
  * 종료 플래그. 시그널 핸들러가 세우고 메인 루프가 읽는다 (volatile sig_atomic_t 관용구).
@@ -133,12 +139,33 @@ static void report_drops(struct watcher_bpf *skel)
 
 int main(int argc, char **argv)
 {
-    /* 첫 번째 인자가 있으면 세션 폴더의 부모 경로로 쓴다. 테스트에서 다른 경로를 쓰려는 용도이다. */
-    const char *root = (argc > 1) ? argv[1] : DEFAULT_SESSIONS_ROOT;
+    /*
+     * 인자 해석과 탐지기 선택은 BPF 로드, pin, 잠금보다 먼저 한다.
+     * 잘못된 인자면 아무것도 건드리지 않고 끝난다 (세션 폴더도 만들지 않는다).
+     */
+    static struct loader_args args;
+    char err[256];
+    if (loader_parse_args(argc, argv, &args, err, sizeof(err)) != 0) {
+        fprintf(stderr, "[loader] 인자 오류: %s\n%s\n", err, USAGE);
+        return 2;
+    }
+    /* 세션 루트가 있으면 세션 폴더의 부모 경로로 쓴다. 테스트에서 다른 경로를 쓰려는 용도이다. */
+    const char *root = args.root ? args.root : DEFAULT_SESSIONS_ROOT;
 
     /* 탐지기 등록이 거부된 적이 있으면 감시 구성이 불완전하므로 시작하지 않는다 */
     if (dispatcher_registration_errors() != 0) {
         fprintf(stderr, "[loader] 탐지기 등록 오류 - 시작하지 않음\n");
+        return 1;
+    }
+    /* 켤 탐지기를 고른다. --detectors 가 없으면 n_detectors 가 0 이라 기본 선택(시험용 제외)이 된다 */
+    if (dispatcher_select(args.names, args.n_detectors, err, sizeof(err)) != 0) {
+        fprintf(stderr, "[loader] 탐지기 선택 오류: %s\n%s\n", err, USAGE);
+        return 2;
+    }
+    /* ready 줄에 찍을 목록 (알파벳순). 탐지기 16개 x 이름 63자 + 쉼표가 들어가는 크기 */
+    static char detector_names[MAX_DETECTORS * LOADER_ARGS_NAME_MAX];
+    if (dispatcher_selected_names(detector_names, sizeof(detector_names)) != 0) {
+        fprintf(stderr, "[loader] 탐지기 목록을 만들지 못함 - 시작하지 않음\n");
         return 1;
     }
     /* 어떤 탐지기가 켜져 있는지 시작할 때 한 번 출력한다 */
@@ -182,7 +209,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    fprintf(stderr, "[loader] ready (sessions root: %s)\n", root);
+    /* 러너가 이 줄의 mode 와 detectors 를 기대와 비교한다 (run_scenarios.sh). mode 는 아직 kill 하나뿐이다 */
+    fprintf(stderr, "[loader] ready (sessions root: %s, mode: kill, detectors: %s)\n", root, detector_names);
 
     /* 최대 100ms 대기하다가 이벤트가 있으면 handle_event 호출. stop 플래그가 설 때까지 반복 */
     while (!stop)

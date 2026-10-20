@@ -35,6 +35,8 @@ CONT="$(mktemp -d)"
 # 런타임 검사 테스트용: 가짜 cgroup 루트(러너가 cgroup_gone 으로 확인하는 곳)와 가짜 bpftool 의 호출 횟수 파일
 CGR="$(mktemp -d)"
 MAPCOUNT="$(mktemp)"
+# 가짜 로더가 받은 인자와 PID 를 적는 파일 (MOCK_LOADER_RECORD). 로더 옵션 묶음에서 쓴다
+LREC="$(mktemp)"
 # check 가 러너에 넘길 추가 인자 (예: --only 패턴). 기본은 없음
 RUNNER_ARGS=()
 
@@ -42,7 +44,7 @@ failures=0
 # mktemp : 임시 "파일"을 만들고 경로를 출력한다 (-d 를 붙이면 폴더). 러너의 출력을 여기에 모아 두고 검사한다.
 OUT="$(mktemp)"
 # trap '명령' EXIT : 스크립트가 어떻게 끝나든 마지막에 그 명령을 실행한다. 여기서는 임시 파일을 지운다.
-trap 'rm -f "$OUT" "$MAPCOUNT"; rm -rf "$SCEN" "$CONT" "$CGR"' EXIT
+trap 'rm -f "$OUT" "$MAPCOUNT" "$LREC"; rm -rf "$SCEN" "$CONT" "$CGR"' EXIT
 
 # 러너 출력(OUT 파일)에 "결과: FAILED" 줄이 있는지 확인한다. 있으면 참(0), 없으면 거짓(1)을 돌려준다.
 # 러너가 종료 코드 1 로 끝나는 exit 는 run_scenarios.sh 맨 끝 한 곳뿐이고 그 바로 앞에서 이 줄을 낸다.
@@ -259,6 +261,62 @@ echo
 echo "[시작을 거부하는가 (종료 코드 2)]"
 check "로더가 준비되지 못하면 시작하지 않음" 2 MOCK_MODE=noready
 expect_text "로더 출력을 보여 줌" "BPF 로드 실패"
+echo
+
+echo "[로더 옵션과 ready 줄 (--detectors, mode)]"
+# 가짜 로더가 기록한 PID 의 프로세스가 끝났는지 확인한다. 러너가 끝난 뒤에도 살아 있으면 정리되지 않은 것이다
+expect_loader_gone() {
+    # 확인 내용 설명
+    local msg="$1" pid
+    # 기록 파일의 "pid=<번호>" 줄에서 번호만 꺼낸다
+    pid="$(sed -n 's/^pid=//p' "$LREC")"
+    # 번호가 있고, kill -0 (살아 있는지 확인만) 이 실패해야 통과
+    if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+        printf '  PASS  %s\n' "$msg"
+    else
+        # 번호가 없거나 아직 살아 있다
+        printf '  FAIL  %s (로더 pid=%s 가 살아 있거나 기록이 없음)\n' "$msg" "${pid:-없음}"
+        failures=$((failures + 1))
+    fi
+}
+# 기록 파일에 정확히 그 줄이 있는지 확인한다 (러너가 로더에 넘긴 인자)
+expect_loader_arg() {
+    # 설명과 찾을 줄
+    local msg="$1" line="$2"
+    # -x : 줄 전체가 같아야 한다, -F : 글자 그대로
+    if grep -qxF -- "$line" "$LREC"; then
+        printf '  PASS  %s\n' "$msg"
+    else
+        # 기록 파일 내용을 보여 준다
+        printf '  FAIL  %s ("%s" 줄이 없음)\n' "$msg" "$line"
+        sed 's/^/        /' "$LREC"
+        failures=$((failures + 1))
+    fi
+}
+# ld1: 정상. 러너가 --detectors 로 세 탐지기를 넘기고, ready 줄이 맞으면 그대로 돈다
+: >"$LREC"
+check "ld1 ready 줄의 mode 와 detectors 가 맞으면 통과" 0 MOCK_MODE=normal MOCK_LOADER_RECORD="$LREC"
+# 러너는 RUNNER_DETECTORS 를 정렬하지 않고 그대로 넘긴다 (정렬은 ready 비교에서만)
+expect_loader_arg "ld1 러너가 --detectors 로 세 탐지기를 넘김" "--detectors=write_exec_boundary,dummy_block,dummy_suspect"
+expect_loader_gone "ld1 끝나면 로더가 정리됨"
+# ld2: 옛 형식 ready (mode, detectors 없음) -> 시작 거부
+: >"$LREC"
+check "ld2 옛 형식 ready 줄 -> 시작 거부" 2 MOCK_MODE=oldready MOCK_LOADER_RECORD="$LREC"
+expect_text "ld2 이유를 알림" "ready 줄이 기대와 다르다"
+expect_loader_gone "ld2 거부한 뒤 로더가 정리됨"
+# ld3: 켜진 탐지기가 다름 (dummy_suspect 가 빠짐) -> 시작 거부
+: >"$LREC"
+check "ld3 detectors 가 다르면 시작 거부" 2 MOCK_MODE=normal MOCK_READY_DETECTORS=dummy_block,write_exec_boundary MOCK_LOADER_RECORD="$LREC"
+expect_text "ld3 기대 목록을 알림" "기대: mode: kill, detectors: dummy_block,dummy_suspect,write_exec_boundary"
+expect_loader_gone "ld3 거부한 뒤 로더가 정리됨"
+# ld4: 목록은 같지만 알파벳순이 아님 (러너가 넘긴 순서 그대로) -> 시작 거부 (로더는 항상 정렬해서 낸다)
+: >"$LREC"
+check "ld4 detectors 순서가 알파벳순이 아니면 시작 거부" 2 MOCK_MODE=normal MOCK_READY_DETECTORS=write_exec_boundary,dummy_block,dummy_suspect MOCK_LOADER_RECORD="$LREC"
+# ld5: mode 가 kill 이 아님 -> 시작 거부
+: >"$LREC"
+check "ld5 mode 가 kill 이 아니면 시작 거부" 2 MOCK_MODE=normal MOCK_READY_MODE=observe MOCK_LOADER_RECORD="$LREC"
+expect_text "ld5 실제 mode 를 알림" "실제: mode: 'observe'"
+expect_loader_gone "ld5 거부한 뒤 로더가 정리됨"
 
 # --only 옵션: 이름이 맞는 시나리오만
 # 아래 세 묶음은 check 함수를 쓰지 않고 풀어 쓴 것이다 (옵션을 직접 넘기거나 확인 조건이 달라서).

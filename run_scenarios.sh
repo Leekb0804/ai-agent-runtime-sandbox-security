@@ -75,6 +75,10 @@ SETTLE_MAX_S=10         # 이 시간을 넘겨도 안정되지 않으면 실패�
 AGENT_TIMEOUT_S=60      # 시나리오 하나가 이 시간을 넘기면 중단한다
 READY_TIMEOUT_S=10      # 로더가 준비되기를 기다리는 최대 시간
 RUNTIME_TRIES=20        # cgroup 소멸, 맵 항목 소멸을 확인하는 최대 횟수 (0.1초 간격, 최대 약 2초)
+# 러너 전용 로더에 켤 탐지기. 로더는 --detectors 가 없으면 더미(시험용)를 켜지 않는다.
+# s99, s03 은 dummy_block 의 BLOCK 에, s99 의 마지막 기대는 dummy_suspect 의 판정에 의존한다. 이 목록은 여기서만 정한다.
+# 일부러 알파벳순이 아닌 순서로 둔다. ready 줄은 로더가 정렬해서 내므로, 아래 want_dets 의 정렬이 빠지면 테스트(ld1)가 잡는다.
+RUNNER_DETECTORS="write_exec_boundary,dummy_block,dummy_suspect"
 
 # 옵션 상태. KEEP=1 이면 성공해도 로그를 보관한다. FILTER 는 --only 로 받은 이름 패턴이다.
 KEEP=0
@@ -593,10 +597,11 @@ trap cleanup EXIT
 
 # 러너 전용 로더를 띄운다. 세션 루트를 인자로 넘겨서 개발용 로그 폴더와 분리한다.
 # 명령 끝의 & : 백그라운드로 실행한다 (끝나기를 기다리지 않고 다음 줄로 넘어간다). 로더는 계속 떠 있어야 하기 때문이다.
-# "$SESS_ROOT" 는 로더에게 주는 인자 (세션 루트). >파일 은 표준 출력, 2>파일 은 오류 출력(stderr)을 따로 저장한다.
+# "$SESS_ROOT" 는 로더에게 주는 인자 (세션 루트). --detectors= 는 켤 탐지기 목록 (위의 RUNNER_DETECTORS).
+# >파일 은 표준 출력, 2>파일 은 오류 출력(stderr)을 따로 저장한다.
 # 로더의 "ready" 와 "log stats", "ring buffer drops" 는 stderr 로 나온다.
 # 바로 다음 줄의 $! 는 방금 백그라운드로 시작한 프로세스의 번호(PID)이다.
-"$SRC_DIR/myc_loader" "$SESS_ROOT" >"$WORK/loader.out" 2>"$WORK/loader.err" &
+"$SRC_DIR/myc_loader" --detectors="$RUNNER_DETECTORS" "$SESS_ROOT" >"$WORK/loader.out" 2>"$WORK/loader.err" &
 LOADER_PID=$!
 
 # 로더가 준비될 때까지 기다린다. 준비 메시지가 안 나오거나 도중에 죽으면 시작하지 않는다 (fail-closed).
@@ -619,6 +624,30 @@ if [[ $ready -ne 1 ]]; then
     sed 's/^/  /' "$WORK/loader.err" >&2
     ANY_FAIL=1
     LOADER_PID=""
+    exit 2
+fi
+
+# ready 줄이 "이 러너가 켜 달라고 한 설정"으로 떠 있는지 확인한다 (fail-closed).
+# 옛 로더는 --detectors=... 를 세션 루트로 잘못 읽고도 ready 를 낼 수 있어서, ready 가 나왔다는 것만으로는 믿지 않는다.
+# 기대하는 줄: [loader] ready (sessions root: <루트>, mode: kill, detectors: <알파벳순 목록>)
+# ready 로 시작하는 첫 줄을 꺼낸다
+ready_line="$(grep -m1 '^\[loader\] ready' "$WORK/loader.err")"
+# 줄 끝의 "mode: <값>, detectors: <값>)" 에서 mode 값만 뽑는다. 형식이 다르면 빈 문자열
+ready_mode="$(sed -n 's/^\[loader\] ready (sessions root: .*, mode: \([^,]*\), detectors: [^)]*)$/\1/p' <<<"$ready_line")"
+# 같은 자리에서 detectors 값만 뽑는다. 형식이 다르면 빈 문자열
+ready_dets="$(sed -n 's/^\[loader\] ready (sessions root: .*, mode: [^,]*, detectors: \([^)]*\))$/\1/p' <<<"$ready_line")"
+# 기대 목록을 쉼표로 나눠 한 줄에 하나씩 -> 정렬 -> 다시 쉼표로 잇는다.
+# LC_ALL=C 는 로더의 strcmp 와 같은 바이트 순서로 정렬하게 한다 (로캘에 따라 순서가 달라지지 않게)
+want_dets="$(tr ',' '\n' <<<"$RUNNER_DETECTORS" | LC_ALL=C sort | paste -sd, -)"
+# 모드는 kill 이어야 하고 탐지기 목록은 정확히 같아야 한다. 하나라도 다르면 시작하지 않는다
+if [[ "$ready_mode" != "kill" || "$ready_dets" != "$want_dets" ]]; then
+    # 무엇을 기대했고 무엇이 왔는지 보여 준다 (옛 형식이면 mode/detectors 가 빈 값으로 보인다)
+    echo "[loader] ready 줄이 기대와 다르다 (옛 로더이거나 설정이 다름). 시작하지 않는다" >&2
+    echo "  기대: mode: kill, detectors: $want_dets" >&2
+    echo "  실제: mode: '${ready_mode}', detectors: '${ready_dets}'" >&2
+    echo "  ready 줄: $ready_line" >&2
+    # 실패로 표시해 WORK 폴더를 남긴다. LOADER_PID 는 그대로 두어 cleanup 의 stop_loader 가 로더를 끄게 한다
+    ANY_FAIL=1
     exit 2
 fi
 

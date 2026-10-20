@@ -169,6 +169,8 @@ fi
 #
 # flat : 로그 레코드를 비교하기 쉽게 한 단계 평평하게 만든다.
 #        event 레코드와 verdict 레코드는 filename, kind 가 .event 아래에 있고 action 레코드에는 .event 가 없다.
+#        result 는 action 레코드(종료 시도의 결과: sent / already_gone / failed / skipped)에만 있다.
+#        flat 에 없는 필드(예: detail, errno)는 expect 의 match 에 써도 항상 null 이라 매칭되지 않는다.
 #        없는 필드는 null 이 되어 어떤 값과도 같지 않다.
 # matches : 레코드가 match 의 모든 키-값을 만족하는가
 #
@@ -212,7 +214,7 @@ fi
 #    -> "OK  #2  {...}  기대 정확히 1개, 실제 1개  <note>" 가 한 줄 출력된다.
 RESULT=$(jq -s -r --slurpfile exp "$EXP" '
   def flat: {
-      type, level, detector, action, session, reason,
+      type, level, detector, action, result, session, reason,
       filename: (.event.filename // null),
       kind:     (.event.kind // null),
       pid:      (.event.pid // null)

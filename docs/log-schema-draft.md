@@ -49,23 +49,36 @@ event 의 필드에 더해 다음이 있다. `event` 객체는 판정의 원인�
 
 ## action (verdicts.jsonl)
 
-판정에 따른 대응 기록. 4일차에는 kill 스텁이 `would_kill` 만 남기고 실제로 종료하지 않는다.
+판정에 따른 대응 기록. BLOCK 이면 세션 cgroup 의 종료를 시도하고 그 결과를 한 줄 남긴다 (w3d2 부터. 그 전에는 스텁의 `would_kill`).
+종료는 세션 ID 끝의 숫자로 `/sys/fs/cgroup/mycontainer-<숫자>` 를 찾고, 디렉토리 inode 가 `cgroup_id` 와 같을 때만 `cgroup.kill` 에 `1` 을 쓴다.
 
 | 필드 | 설명 |
 | --- | --- |
 | `cgroup_id` | 대상 세션의 cgroup |
-| `action` | `would_kill` (스텁). 3주차에 실제 종료 기록으로 확장 |
+| `action` | `kill` (`would_kill` 은 나중의 평가용 관찰 모드에 쓰려고 비워 둔다) |
+| `result` | 종료 시도의 결과 (아래 표) |
+| `detail` | 어느 단계에서 끝났는지: `written`, `enoent`, `inode_mismatch`, `bad_session_id`, `open_root`, `open_dir`, `fstat`, `open_kill`, `write`, `unattributed` |
+| `errno` | 실패한 호출의 errno. 없으면 0 |
 | `reason` | 대응을 일으킨 판정의 reason |
 
-한 세션에서 BLOCK 이 여러 번 나와도 `action` 은 한 번만 기록된다.
+| `result` | 의미 | 다음 BLOCK 때 |
+| --- | --- | --- |
+| `sent` | `cgroup.kill` 에 썼다. 로더가 그 cgroup 을 `session_cgroups` 맵에서 지운다 | 다시 시도하지 않음 |
+| `already_gone` | 대상이 없다. 디렉토리가 없거나(`enoent`) 같은 이름의 다른 cgroup 이다(`inode_mismatch`, 아무것도 쓰지 않음) | 다시 시도하지 않음 |
+| `failed` | 그 밖의 실패 (잘못된 세션 ID, 권한, 쓰기 오류 등). `errno` 를 남긴다 | 다시 시도함 |
+| `skipped` | 세션을 찾지 못해(`_unattributed`) 대상 cgroup 을 알 수 없어 시도하지 않았다 | 다시 시도하지 않음 |
+
+한 세션에서 BLOCK 이 여러 번 나와도 `action` 은 한 번만 기록된다 (`failed` 일 때만 다음 BLOCK 에서 다시 시도해 한 줄이 더 남는다).
 
 ## 샘플 (실제 코드가 만든 출력)
 
 ```json
 {"schema_version":0,"type":"event","session":"20261002-115607-1095185","logged_at_ms":1791260904853,"event":{"kind":"EXEC","pid":1095282,"cgroup_id":309013,"ts_ns":2061872220461627,"filename":"/tmp/trigger"}}
 {"schema_version":0,"type":"verdict","session":"20261002-115607-1095185","logged_at_ms":1791260904853,"level":"BLOCK","detector":"dummy_block","reason":"dummy: /tmp/trigger 실행","event":{"kind":"EXEC","pid":1095282,"cgroup_id":309013,"ts_ns":2061872220461627,"filename":"/tmp/trigger"}}
-{"schema_version":0,"type":"action","session":"20261002-115607-1095185","logged_at_ms":1791260904853,"cgroup_id":309013,"action":"would_kill","reason":"dummy: /tmp/trigger 실행"}
+{"schema_version":0,"type":"action","session":"20261002-115607-1095185","logged_at_ms":1791260904853,"cgroup_id":309013,"action":"kill","result":"sent","detail":"written","errno":0,"reason":"dummy: /tmp/trigger 실행"}
 ```
+
+(마지막 action 줄은 실제 출력이 아니라, 같은 로그의 `would_kill` 줄을 w3d2 형식으로 손으로 고친 예이다.)
 
 ## 알려진 한계 (한계 목록에 반영할 것)
 

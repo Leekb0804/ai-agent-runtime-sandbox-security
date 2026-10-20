@@ -11,6 +11,7 @@ src/test_verdict_handler
 src/test_write_exec_boundary
 src/test_loader_lock
 src/test_kill
+src/test_kill_session
 
 # 로컬 전용 설정
 .claude/settings.local.json

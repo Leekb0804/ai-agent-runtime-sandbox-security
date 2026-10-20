@@ -14,8 +14,15 @@
  *   <tmp>/by-cgroup/778  -> "../bad id"      허용되지 않는 문자(공백)
  *   <tmp>/by-cgroup/779  -> ..               상위 폴더로 올라가는 경로 조작 시도
  *
+ *   <tmp>/by-cgroup/2001~2004 -> ../sess-F 등  kill 결과별 플래그 처리를 보는 세션들
+ *
  * 이 링크들은 실제로는 run_container.sh 의 "ln -sfn" 이 만드는 것이고(session_log.h 참고),
  * 여기서는 C 의 symlink() 로 흉내 낸다.
+ *
+ * ===== 가짜 kill_session =====
+ * 이 테스트는 kill.c 를 링크하지 않고 아래의 가짜 kill_session 을 쓴다 (build.sh 참고).
+ * 진짜는 /sys/fs/cgroup 을 열기 때문이다. 가짜는 돌려줄 결과를 차례로 정해 둘 수 있고,
+ * 불린 횟수를 세며, 진짜처럼 action 레코드를 한 줄 남긴다.
  *
  * 빌드/실행: src/build.sh 가 만든 ./test_verdict_handler
  */
@@ -29,6 +36,7 @@
 #include "detector.h"
 #include "session_log.h"
 #include "verdict_handler.h"
+#include "kill.h"
 
 /* 실패한 검사 개수. main 이 끝날 때 0 이 아니면 종료 코드를 1 로 낸다. */
 static int failures;
@@ -41,6 +49,42 @@ static int failures;
     if (cond) { printf("  PASS  %s\n", msg); } \
     else { printf("  FAIL  %s\n", msg); failures++; } \
 } while (0)
+
+/*
+ * 가짜 kill_session. fake_script 에 정해 둔 결과를 차례로 돌려주고, 다 쓰면 sent 를 돌려준다.
+ * 기록 형식은 진짜와 같은 session_write_kill 을 쓴다 (detail 은 "fake").
+ */
+static enum kill_status fake_script[4];
+static int fake_script_len;
+static int fake_calls;
+
+static const char *fake_status_str(enum kill_status st)
+{
+    switch (st) {
+    case KILL_STATUS_SENT:         return "sent";
+    case KILL_STATUS_ALREADY_GONE: return "already_gone";
+    case KILL_STATUS_SKIPPED:      return "skipped";
+    case KILL_STATUS_FAILED:       return "failed";
+    }
+    return "failed";
+}
+
+enum kill_status kill_session(struct session *s, const char *reason)
+{
+    enum kill_status st = fake_calls < fake_script_len ? fake_script[fake_calls] : KILL_STATUS_SENT;
+    fake_calls++;
+    session_write_kill(s, fake_status_str(st), "fake", 0, reason);
+    return st;
+}
+
+/* 가짜의 결과 순서를 정하고 호출 횟수를 0 으로 되돌린다 */
+static void fake_reset(const enum kill_status *script, int n)
+{
+    for (int i = 0; i < n; i++)
+        fake_script[i] = script[i];
+    fake_script_len = n;
+    fake_calls = 0;
+}
 
 /* 이번 테스트의 임시 세션 루트 경로 (setup 에서 정함) */
 static char root[PATH_MAX];
@@ -137,6 +181,18 @@ static void setup(void)
     path_of(p, sizeof(p), "by-cgroup/778");  symlink("../bad id", p);   /* 공백이 든 ID */
     path_of(p, sizeof(p), "by-cgroup/779");  symlink("..", p);          /* 경로 조작 */
 
+    /* kill 결과별 플래그 처리를 보는 세션 4개 (서로 다른 칸이라 플래그가 섞이지 않는다) */
+    const char *names[] = { "sess-F", "sess-S", "sess-G", "sess-K" };
+    for (int i = 0; i < 4; i++) {
+        char d[PATH_MAX], l[PATH_MAX], t[64], rel[64];
+        path_of(d, sizeof(d), names[i]);
+        mkdir(d, 0755);
+        snprintf(rel, sizeof(rel), "by-cgroup/%d", 2001 + i);
+        path_of(l, sizeof(l), rel);
+        snprintf(t, sizeof(t), "../%s", names[i]);
+        symlink(t, l);
+    }
+
     session_log_init(root);
 }
 
@@ -185,9 +241,33 @@ static void test_block_kills_once(void)
     if (!log) { CHECK(0, "로그를 읽을 수 있음"); return; }
     CHECK(count_sub(log, "\"level\":\"BLOCK\"") == 2, "BLOCK 판정은 둘 다 기록됨");
     CHECK(count_sub(log, "\"type\":\"action\"") == 1, "종료 요청(action)은 한 번만");
-    CHECK(strstr(log, "\"action\":\"would_kill\"") != NULL, "스텁이 would_kill 을 기록함");
+    CHECK(strstr(log, "\"action\":\"kill\",\"result\":\"sent\"") != NULL, "종료 결과(action=kill, result=sent)가 기록됨");
     CHECK(count_lines(log) == 4, "SUSPECT 1 + BLOCK 2 + action 1 = 4줄");
     free(log);
+}
+
+/*
+ * 테스트 2-1: kill 결과에 따른 kill_requested 처리.
+ * 같은 세션에 BLOCK 을 두 번 보내고 가짜 kill_session 이 몇 번 불렸는지 센다.
+ *   failed                        -> 플래그를 되돌리므로 두 번째 BLOCK 에서 다시 불린다 (2번)
+ *   sent / already_gone / skipped -> 플래그를 유지하므로 두 번째 BLOCK 에서는 불리지 않는다 (1번)
+ */
+static int blocks_twice(__u64 cg, enum kill_status first)
+{
+    enum kill_status script[] = { first, KILL_STATUS_SENT };
+    fake_reset(script, 2);
+    send_verdict(cg, "/tmp/x", V_BLOCK, "test", "첫 번째 BLOCK");
+    send_verdict(cg, "/tmp/x", V_BLOCK, "test", "두 번째 BLOCK");
+    return fake_calls;
+}
+
+static void test_kill_result_flag(void)
+{
+    printf("[kill 결과에 따른 재시도 플래그]\n");
+    CHECK(blocks_twice(2001, KILL_STATUS_FAILED) == 2, "failed_resets_flag_and_retries");
+    CHECK(blocks_twice(2002, KILL_STATUS_SENT) == 1, "sent_keeps_flag");
+    CHECK(blocks_twice(2003, KILL_STATUS_ALREADY_GONE) == 1, "already_gone_keeps_flag");
+    CHECK(blocks_twice(2004, KILL_STATUS_SKIPPED) == 1, "skipped_keeps_flag");
 }
 
 /*
@@ -284,6 +364,7 @@ int main(void)
 
     test_suspect_only_logged();
     test_block_kills_once();
+    test_kill_result_flag();
     test_unattributed();
     test_log_forgery();
     test_file_mode();

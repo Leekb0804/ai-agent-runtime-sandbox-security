@@ -343,15 +343,16 @@ void session_write_verdict(struct session *s, const struct event_hdr *h, size_t 
     account(t0);
 }
 
-/* 대응(action) 한 줄을 verdicts.jsonl 에 기록한다. 판정과 같은 파일에 남겨 "판정 -> 대응" 순서가 보이게 한다. */
-void session_write_action(struct session *s, const char *action, const char *reason)
+/* 종료 시도(action) 한 줄을 verdicts.jsonl 에 기록한다. 판정과 같은 파일에 남겨 "판정 -> 대응" 순서가 보이게 한다. */
+void session_write_kill(struct session *s, const char *result, const char *detail, int err,
+                        const char *reason)
 {
     if (!s->verdicts) {
         g_stats.lost++;
         return;
     }
     unsigned long long t0 = mono_ns();
-    jsonl_write_action(s->verdicts, s->id, s->cgroup_id, action, reason);
+    jsonl_write_kill(s->verdicts, s->id, s->cgroup_id, result, detail, err, reason);
     fflush(s->verdicts);
     check_error(s->verdicts);
     account(t0);

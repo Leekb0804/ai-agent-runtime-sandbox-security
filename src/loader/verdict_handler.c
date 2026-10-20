@@ -37,7 +37,7 @@ void handle_verdict(const struct event_hdr *h, size_t len,
      *     파이프(| tee)나 파일 : 블록 단위 (약 4KB)      -> flush 없으면 판정이 한참 뒤에야 나타남
      * 로더를 "sudo ./myc_loader | tee ..." 로 실행하면 stdout 이 파이프라서 판정이 안 보여
      * "탐지가 안 된다"고 착각하기 쉽다.
-     * 또 아래의 kill 스텁은 stderr 로 알리는데 stderr 는 버퍼링이 없어 즉시 나간다. 여기서 flush 하지 않으면
+     * 또 아래의 kill 은 stderr 로 알리는데 stderr 는 버퍼링이 없어 즉시 나간다. 여기서 flush 하지 않으면
      * 화면에 "대응 알림 -> 판정" 순서로 뒤바뀌어 보인다. 그래서 BLOCK 처리보다 앞에서 flush 한다.
      * 이 파일이 flush 를 책임지는 이유: echo 는 호출한 쪽이 맡긴 FILE* 이므로, 쓴 쪽이 내보내야
      * 무엇을 넘겼든(stdout 이든 다른 파일이든) 같은 동작이 보장된다. 판정은 이벤트보다 드물어 비용도 작다.
@@ -51,13 +51,18 @@ void handle_verdict(const struct event_hdr *h, size_t len,
      * 2. BLOCK 이면 세션을 종료한다. 단 한 번만 (멱등성).
      *    같은 세션에서 BLOCK 이 여러 번 와도(다른 탐지기가 각자 BLOCK 을 내는 경우 등) 종료 요청은 한 번이다.
      *    플래그를 kill_session 호출 "전에" 세운다: 호출 중에 또 BLOCK 이 들어와도 중복 호출을 막기 위해서.
-     *    (kill 이 실제로 구현되는 3주차에는 실패 시 플래그를 되돌릴지 정해야 한다)
      *
-     *    플래그는 이 세션의 칸(s)에 저장되어 있다. 칸이 밀려나 사라지면 플래그도 사라지는 한계가 있다.
+     *    결과에 따른 플래그:
+     *      failed                       : 되돌린다 (0). 다음 BLOCK 때 다시 시도한다
+     *      sent / already_gone / skipped : 유지한다 (1). 다시 시도해도 결과가 같거나 이미 끝났다
+     *
+     *    플래그는 이 세션의 칸(s)에 저장되어 있다. 칸이 밀려나 사라지면 플래그도 사라져서 kill_session 이
+     *    한 번 더 불릴 수 있다. 그때는 cgroup 이 이미 없어서 already_gone 이 되므로 해가 없다.
      *    SUSPECT 는 여기서 아무 대응도 하지 않는다. 기록은 위에서 이미 끝났다.
      */
     if (v->level == V_BLOCK && !s->kill_requested) {
         s->kill_requested = 1;
-        kill_session(s, v->reason);
+        if (kill_session(s, v->reason) == KILL_STATUS_FAILED)
+            s->kill_requested = 0;
     }
 }

@@ -28,6 +28,7 @@ JUDGE="$HERE/judge.sh"
 FIX="$HERE/fixtures"
 S00="$ROOT/scenarios/s00_benign/expect.json"
 S99="$ROOT/scenarios/s99_dummy_block/expect.json"
+S02="$ROOT/scenarios/s02_write_exec_same_session/expect.json"
 
 # 실패한 케이스 수를 센다.
 failures=0
@@ -69,9 +70,13 @@ EOF2
 
 # 각 묶음의 제목을 출력하고, 그 아래의 check 호출들이 그 묶음에 속한다.
 # check 인자 순서: 설명, 기대 종료 코드 (0 통과 / 1 검사 실패 / 2 입력 오류), 로그, expect.json.
+# 주의: real_s99_dummy_block 과 bad_double_action 의 action 줄은 실제 VM 로그가 아니다.
+#       4일차 로그의 would_kill 줄을 w3d2 에 새 형식(action=kill, result/detail/errno)으로 손으로 고쳤다.
+#       나머지 줄은 4일차 실제 로그 그대로이다. VM 에서 새로 뜬 실제 로그로 교체하는 것은 나중 일이다.
+#       (tools/mock/run_container.sh 도 이 fixture 를 복사해서 쓴다)
 echo "[통과해야 하는 경우: 실제 로그 + 맞는 기대값]"
 check "s00_benign: 무해한 명령은 차단 없이 기록됨" 0 "$FIX/real_s00_benign"     "$S00"
-check "s99_dummy_block: BLOCK 1개, would_kill 1번, 이후 기록 계속" 0 "$FIX/real_s99_dummy_block" "$S99"
+check "s99_dummy_block: BLOCK 1개, 종료 시도(kill, result=sent) 1번, 같은 이벤트의 다른 판정도 남음" 0 "$FIX/real_s99_dummy_block" "$S99"
 
 echo "[탐지기와 무관한가: 판정이 0줄이어도 무해한 시나리오는 통과]"
 check "탐지기가 하나도 없어도(판정 0줄) s00 은 통과 (이벤트 관측만 본다)" 0 "$FIX/events_only" "$S00"
@@ -84,6 +89,35 @@ check "차단 없는 로그를 s99(차단 있어야 함)와 비교하면 실패"
 echo "[실패해야 하는 경우: 로그를 일부러 깨뜨림]"
 check "BLOCK 은 있는데 종료 요청 기록이 빠지면 실패"          1 "$FIX/bad_no_action"     "$S99"
 check "종료 요청이 두 번 기록되면 실패 (멱등성 위반)"          1 "$FIX/bad_double_action" "$S99"
+
+echo "[종료 시도의 result 가 실제로 비교되는가]"
+# s99 fixture 에서 result 만 sent -> already_gone 으로 바꾼 로그를 임시 폴더에 만든다.
+mkdir -p "$TMP/gone"
+cp "$FIX/real_s99_dummy_block/events.jsonl" "$TMP/gone/events.jsonl"
+sed 's/"result":"sent"/"result":"already_gone"/' "$FIX/real_s99_dummy_block/verdicts.jsonl" >"$TMP/gone/verdicts.jsonl"
+check "기대는 result=sent 인데 로그는 already_gone 이면 실패" 1 "$TMP/gone" "$S99"
+# 같은 로그를 result=already_gone 기대로 보면 통과해야 한다 (result 가 비교에서 빠지면 여기서 실패한다)
+cat >"$TMP/expect_gone.json" <<'EOF3'
+{ "expect": [ { "match": { "type": "action", "action": "kill", "result": "already_gone" }, "count": 1 } ] }
+EOF3
+check "기대와 로그가 모두 result=already_gone 이면 통과" 0 "$TMP/gone" "$TMP/expect_gone.json"
+
+echo "[음성 검사가 실제 이름으로 세는가: s02 의 action=kill count 0]"
+# s02 의 다른 검사(TAG_HIT 관측, write_exec_boundary SUSPECT 1개, BLOCK 0개)는 모두 만족하는 손으로 만든 로그.
+# kill 레코드가 없는 쪽은 통과하고, kill 레코드 한 줄만 더한 쪽은 실패해야 한다.
+# (기대값의 이름이 로그와 다르면(예: would_kill) kill 레코드를 세지 못해 항상 통과하는 음성 검사가 된다)
+mkdir -p "$TMP/s02_ok" "$TMP/s02_kill"
+cat >"$TMP/s02_ok/events.jsonl" <<'EOF4'
+{"schema_version":0,"type":"event","session":"t-1","logged_at_ms":1,"event":{"kind":"TAG_HIT","pid":10,"cgroup_id":500,"ts_ns":2,"exec_cgroup_id":500,"tag_ts_ns":1,"tag_write_count":1,"dev":40,"ino":7,"filename":"/tmp/payload"}}
+EOF4
+cat >"$TMP/s02_ok/verdicts.jsonl" <<'EOF4'
+{"schema_version":0,"type":"verdict","session":"t-1","logged_at_ms":1,"level":"SUSPECT","detector":"write_exec_boundary","reason":"same session","event":{"kind":"TAG_HIT","pid":10,"cgroup_id":500,"ts_ns":2,"exec_cgroup_id":500,"tag_ts_ns":1,"tag_write_count":1,"dev":40,"ino":7,"filename":"/tmp/payload"}}
+EOF4
+cp "$TMP/s02_ok/events.jsonl" "$TMP/s02_kill/events.jsonl"
+cp "$TMP/s02_ok/verdicts.jsonl" "$TMP/s02_kill/verdicts.jsonl"
+echo '{"schema_version":0,"type":"action","session":"t-1","logged_at_ms":1,"cgroup_id":500,"action":"kill","result":"sent","detail":"written","errno":0,"reason":"x"}' >>"$TMP/s02_kill/verdicts.jsonl"
+check "s02 기대값: kill 레코드가 없으면 통과" 0 "$TMP/s02_ok" "$S02"
+check "s02 기대값: kill 레코드가 하나라도 있으면 실패" 1 "$TMP/s02_kill" "$S02"
 
 echo "[가짜 통과 방지: 빈 로그]"
 check "빈 로그는 s00 의 양성 검사 때문에 실패" 1 "$FIX/empty" "$S00"

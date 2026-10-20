@@ -72,10 +72,11 @@
 
 ### 세션 대응과 kill switch
 
-- [ ] **kill 구현에 세션의 cgroup 경로가 필요한데 지금은 id만 있음**
+- [x] **kill 구현에 세션의 cgroup 경로가 필요한데 지금은 id만 있음**
   - 이유: cgroup 경로가 있어야 cgroup.kill 등으로 세션을 종료할 수 있다.
+  - 비고: 새 필드 없이 세션 ID 끝 숫자로 `/sys/fs/cgroup/mycontainer-<숫자>` 를 만들고, 디렉토리를 fd 로 열어 inode 가 cgroup_id 와 같을 때만 `cgroup.kill` 에 쓴다 (`kill_cgroup.c`).
   - 시점: w3
-  - 해결: (미해결)
+  - 해결: "w3d2: BLOCK 이면 세션 cgroup 을 cgroup.kill 로 종료하고 결과를 기록 (sent/already_gone/failed/skipped)"
 - [ ] **BLOCK이면 무조건 종료할지, 평가용 관찰 모드를 둘지 정하지 않음**
   - 이유: 오탐 평가 중에는 종료 없이 BLOCK 판정만 모아야 할 때가 있다.
   - 비고: 평가용으로만 쓰고 README 에 명시. 기본값이 되면 이 도구의 의미가 사라짐.

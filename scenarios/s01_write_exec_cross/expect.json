@@ -1,5 +1,5 @@
 {
-  "description": "컨테이너가 쓴 파일을 호스트(세션 밖)가 직접 실행하면 write_exec_boundary 가 BLOCK 을 내고 종료 요청이 한 번 기록된다.",
+  "description": "컨테이너가 쓴 파일을 호스트(세션 밖)가 직접 실행하면 write_exec_boundary 가 BLOCK 을 내고 종료 시도(already_gone)가 한 번 기록된다.",
   "expect": [
     {
       "note": "커널이 쓴 파일의 실행(TAG_HIT)을 관측했다 (탐지기와 무관한 사실)",
@@ -17,8 +17,8 @@
       "count": 1
     },
     {
-      "note": "멱등성: 종료 요청(would_kill)은 한 번만",
-      "match": { "type": "action", "action": "would_kill" },
+      "note": "종료 시도는 한 번. 호스트 실행은 세션이 끝나 cgroup 이 지워진 뒤라 대상이 이미 없다 (already_gone)",
+      "match": { "type": "action", "action": "kill", "result": "already_gone" },
       "count": 1
     },
     {

@@ -125,7 +125,9 @@ struct session *session_get(__u64 cgroup_id);
 void session_write_event(struct session *s, const struct event_hdr *h, size_t len);
 void session_write_verdict(struct session *s, const struct event_hdr *h, size_t len,
                            const struct verdict *v);
-void session_write_action(struct session *s, const char *action, const char *reason);
+/* 세션 종료 시도의 결과 한 줄 (형식은 jsonl.h 의 jsonl_write_kill) */
+void session_write_kill(struct session *s, const char *result, const char *detail, int err,
+                        const char *reason);
 
 const struct session_log_stats *session_log_get_stats(void);
 

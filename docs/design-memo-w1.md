@@ -46,7 +46,7 @@ AI 코딩 에이전트가 도는 컨테이너(세션)를 커널(eBPF)에서 관�
 | 탐지기 | `src/loader/detectors/*.c` | 판단 함수. 파일을 넣으면 스스로 등록 (`constructor`) |
 | 판정 수집기 | `src/loader/verdict_handler.*` | 기록 후 대응. 모든 판정이 거치는 단 하나의 지점 |
 | 세션 로그 | `src/loader/session_log.*`, `jsonl.*` | cgroup id -> 세션 변환, 세션별 파일 기록, JSON 한 줄 생성 |
-| kill switch | `src/loader/kill.*` | 인터페이스 확정. 지금은 `would_kill` 만 기록하는 스텁 |
+| kill switch | `src/loader/kill.*` | 인터페이스 확정. 지금은 `would_kill` 만 기록하는 스텁 (w3d2 에서 실제 kill 로 대체됨) |
 | 시나리오 러너 | `run_scenarios.sh`, `scenarios/`, `tools/` | 시나리오를 실제로 돌려 세션 로그를 기대값과 비교 |
 
 ## 4. 핵심 인터페이스

@@ -12,7 +12,7 @@
  * 하는 일:
  *   1) eBPF 프로그램을 커널에 올리고(load) 후킹 지점에 연결(attach)한다.
  *   2) ring buffer 에서 이벤트를 꺼내 세션별 events.jsonl 에 기록하고 디스패처에 넘긴다.
- *   3) 판정이 나오면 handle_verdict 가 verdicts.jsonl 에 기록하고, BLOCK 이면 kill 스텁을 호출한다.
+ *   3) 판정이 나오면 handle_verdict 가 verdicts.jsonl 에 기록하고, BLOCK 이면 kill_session 으로 세션 cgroup 을 종료한다.
  *   4) Ctrl+C / SIGTERM 을 받으면 로그 통계를 출력하고 정리한 뒤 종료한다.
  *
  * ===== 4일차에서 바뀐 점 =====
@@ -23,7 +23,7 @@
  * ===== 전체 흐름 =====
  *   ring buffer -> handle_event -> session_get(cgroup_id) -> events.jsonl + 화면
  *                               -> dispatch_event -> 탐지기들 -> handle_verdict
- *                                                       -> verdicts.jsonl (+ BLOCK 이면 kill_session 스텁)
+ *                                                       -> verdicts.jsonl (+ BLOCK 이면 kill_session)
  *
  * 실행: sudo ./myc_loader [세션 루트 디렉토리]
  *       (생략하면 /var/lib/mycontainer/sessions)
@@ -33,8 +33,10 @@
 #include <signal.h>
 #include <linux/types.h>         /* event.h 의 __u32/__u64 제공. event.h 보다 먼저 include! */
 #include <bpf/libbpf.h>          /* ring_buffer__*, bpf_map__fd */
-#include <bpf/bpf.h>             /* bpf_map_lookup_elem */
+#include <bpf/bpf.h>             /* bpf_map_lookup_elem, bpf_map_delete_elem */
 #include <stdlib.h>              /* calloc, free */
+#include <errno.h>
+#include <string.h>              /* strerror */
 #include "watcher.skel.h"        /* bpftool 이 생성한 skeleton */
 #include "bpf/event.h"
 #include "detector.h"
@@ -42,6 +44,7 @@
 #include "jsonl.h"
 #include "session_log.h"
 #include "verdict_handler.h"
+#include "kill.h"
 #include "loader_lock.h"
 
 #define DEFAULT_SESSIONS_ROOT "/var/lib/mycontainer/sessions"
@@ -81,6 +84,21 @@ static int handle_event(void *ctx, void *data, size_t len)
 
     dispatch_event(data, len);    /* 탐지기에게 분배. 판정이 나오면 handle_verdict 가 호출됨 */
     return 0;
+}
+
+/*
+ * kill 이 cgroup.kill 에 쓴(sent) 뒤 불리는 콜백. 그 cgroup 을 session_cgroups 맵에서 지운다.
+ * 관리자(mycontainer_run)가 함께 죽어서 스스로 지우지 못하기 때문이다. ctx 는 맵 fd 를 담은 int 의 주소다.
+ * 항목이 이미 없으면(ENOENT) 지워진 것과 같으므로 성공으로 본다. 맵을 다루는 libbpf 호출은 이 파일에만 둔다.
+ */
+static int unwatch_cgroup(__u64 cgroup_id, void *ctx)
+{
+    int fd = *(const int *)ctx;
+    if (bpf_map_delete_elem(fd, &cgroup_id) == 0 || errno == ENOENT)
+        return 0;
+    fprintf(stderr, "[loader] session_cgroups 항목 삭제 실패 (cgroup %llu): %s\n",
+            (unsigned long long)cgroup_id, strerror(errno));
+    return -1;
 }
 
 /*
@@ -141,6 +159,11 @@ int main(int argc, char **argv)
     struct watcher_bpf *skel = watcher_bpf__open();
     if (!skel) return 1;
     if (watcher_bpf__load(skel)) return 1;
+
+    /* 로드 뒤에 맵 fd 가 생긴다. kill 이 sent 일 때 그 cgroup 을 감시 대상에서 지우도록 연결한다 */
+    static int cgroups_fd;
+    cgroups_fd = bpf_map__fd(skel->maps.session_cgroups);
+    kill_set_unwatch(unwatch_cgroup, &cgroups_fd);
     if (watcher_bpf__attach(skel)) return 1;
 
     struct ring_buffer *rb = ring_buffer__new(

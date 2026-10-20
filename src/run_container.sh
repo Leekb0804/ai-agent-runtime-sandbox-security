@@ -116,7 +116,37 @@ set +e
 RC=$?
 set -e
 
-sudo rmdir "$CGROUP_PATH" || echo "[!] cgroup 정리 실패: $CGROUP_PATH (계속 진행)"
+# cgroup 디렉토리 정리는 짧게 다시 시도한다.
+# kill(cgroup.kill) 직후에는 mycontainer_run 이 먼저 죽어서 여기로 돌아왔는데도 cgroup 안의 다른 프로세스가
+# 아직 종료 중일 수 있다. 그러면 rmdir 이 EBUSY 로 실패한다. 이 디렉토리를 지워 줄 다른 주체가 없으므로 여기서 기다린다.
+# 정상 종료 경로에서는 첫 시도에 성공하므로 지연이 없다.
+# 최대 시도 횟수와 간격(초)
+RMDIR_TRIES=20
+RMDIR_INTERVAL=0.05
+# 마지막 시도의 오류 메시지 (실패했을 때만 보여 준다)
+rmdir_err=""
+# 지웠는지 표시
+rmdir_ok=0
+# 1번째부터 RMDIR_TRIES 번째까지 시도한다
+for ((i = 1; i <= RMDIR_TRIES; i++)); do
+    # if 조건 안이라 실패해도 set -e 로 끝나지 않는다. 오류 출력은 변수에 받아 둔다
+    if rmdir_err="$(sudo rmdir "$CGROUP_PATH" 2>&1)"; then
+        # 성공하면 즉시 빠져나온다
+        rmdir_ok=1
+        break
+    fi
+    # 마지막 시도가 아니면 잠깐 쉬고 다시 시도한다
+    if [[ $i -lt $RMDIR_TRIES ]]; then
+        sleep "$RMDIR_INTERVAL"
+    fi
+done
+# 끝까지 실패하면 예전처럼 경고만 내고 계속 진행한다 (종료 코드, netns 삭제, meta.json 기록은 그대로)
+if [[ $rmdir_ok -ne 1 ]]; then
+    # 예전에는 rmdir 자신의 오류가 stderr 에 그대로 나왔으므로 마지막 오류를 같은 곳에 낸다
+    echo "$rmdir_err" >&2
+    # 경고에 시도 횟수를 덧붙인다
+    echo "[!] cgroup 정리 실패: $CGROUP_PATH (${RMDIR_TRIES}회 시도, 계속 진행)"
+fi
 sudo ip netns delete "$NETNS_NAME" || echo "[!] netns 정리 실패: $NETNS_NAME (계속 진행)"
 
 if [[ "$MODE" == "agent" ]]; then

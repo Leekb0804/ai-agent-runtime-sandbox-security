@@ -1,0 +1,35 @@
+{
+  "description": "정상 작업: 같은 세션에서 셸 스크립트를 쓰고 chmod +x 한 뒤 직접 실행한다. 스크립트 쓰기, chmod, 직접 실행이 write_exec_boundary 의 SUSPECT 를 한 번만 내는지 잰다. 스크립트와 run.sh 가 > /dev/null 을 써서 컨테이너 안 /dev/null(mycontainer_run 4.7단계)이 열리는지도 회귀로 본다 (안 열리면 set -e 로 실패해 exit_code 0 검사에 걸린다). ./n05_task.sh 의 EXEC 와 SUSPECT 개수는 VM 에서 러너로 다섯 번 돌려 모두 같았던 값이다 (반복 안정성을 확정한 것은 아니다).",
+  "expect": [
+    {
+      "note": "양성 검사 (탐지기와 무관): 커널이 chmod 의 실행을 관측했다. 이 검사가 없으면 빈 로그도 통과한다",
+      "match": { "type": "event", "kind": "EXEC", "filename": "/usr/bin/chmod" },
+      "min": 1
+    },
+    {
+      "note": "양성 검사 (탐지기와 무관): 스크립트 안의 ls 실행을 관측했다 (스크립트가 실제로 돌았다는 뜻)",
+      "match": { "type": "event", "kind": "EXEC", "filename": "/usr/bin/ls" },
+      "min": 1
+    },
+    {
+      "note": "양성 검사 (탐지기와 무관): 세션이 쓴 스크립트의 직접 실행을 관측했다. filename 은 execve 에 넘긴 이름이라고 본 것이다. execve 에 넘긴 이름으로 기록됨을 VM 실측으로 확인했다 (다섯 번 같음)",
+      "match": { "type": "event", "kind": "EXEC", "filename": "./n05_task.sh" },
+      "min": 1
+    },
+    {
+      "note": "정상 작업은 차단되지 않는다",
+      "match": { "type": "verdict", "level": "BLOCK" },
+      "count": 0
+    },
+    {
+      "note": "write_exec_boundary 가 같은 세션 실행(./n05_task.sh)을 SUSPECT 로 한 번 기록. 러너가 dummy_suspect 도 켜므로 detector 로 거른다. 한 번 실측한 값 기준 다섯 번 같았음, 값이 바뀌면 원인을 본다",
+      "match": { "type": "verdict", "level": "SUSPECT", "detector": "write_exec_boundary" },
+      "count": 1
+    },
+    {
+      "note": "차단이 없으므로 종료 대응 기록도 없다 (s00, n01, n04 와 같은 방식)",
+      "match": { "type": "action" },
+      "count": 0
+    }
+  ]
+}

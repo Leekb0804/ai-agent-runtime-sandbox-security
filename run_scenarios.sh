@@ -73,7 +73,9 @@ SESSION_CGROUPS_PIN="${MYC_SESSION_CGROUPS_PIN:-/sys/fs/bpf/session_cgroups}"  #
 SETTLE_MS=500           # 이벤트 로그가 이 시간 동안 늘지 않으면 로더가 다 썼다고 본다
 SETTLE_MAX_S=10         # 이 시간을 넘겨도 안정되지 않으면 실패로 본다
 AGENT_TIMEOUT_S=60      # 시나리오 하나가 이 시간을 넘기면 중단한다
-READY_TIMEOUT_S=10      # 로더가 준비되기를 기다리는 최대 시간
+# 로더가 준비되기를 기다리는 최대 시간(초). 기본 10. MYC_READY_TIMEOUT_S 는 테스트(tools/test_runner.sh)에서 줄이는 용도로만 쓴다.
+# 양의 정수(1~9999)가 아니면 사전 점검이 시작을 거부한다 (아래 대기 반복문이 이 값을 계산에 쓰기 때문이다)
+READY_TIMEOUT_S="${MYC_READY_TIMEOUT_S:-10}"
 RUNTIME_TRIES=20        # cgroup 소멸, 맵 항목 소멸을 확인하는 최대 횟수 (0.1초 간격, 최대 약 2초)
 # 러너 전용 로더에 켤 탐지기. 로더는 --detectors 가 없으면 더미(시험용)를 켜지 않는다.
 # s99, s03 은 dummy_block 의 BLOCK 에, s99 의 마지막 기대는 dummy_suspect 의 판정에 의존한다. 이 목록은 여기서만 정한다.
@@ -145,6 +147,8 @@ preflight() {
     # 하나가 틀려도 바로 멈추지 않고 전부 확인한 뒤 한꺼번에 보여 주려는 것이다.
     #   -x 파일 : 실행할 수 있는 파일인가.    -d 경로 : 폴더인가.
     command -v jq >/dev/null 2>&1 || errs+=("jq 가 필요하다: sudo apt install jq")
+    # =~ 정규식: 0 으로 시작하지 않는 1~4자리 숫자만 받는다. 0, 빈 값, 글자, 음수, 너무 큰 값은 거부한다
+    [[ "$READY_TIMEOUT_S" =~ ^[1-9][0-9]{0,3}$ ]] || errs+=("MYC_READY_TIMEOUT_S 는 1~9999 의 양의 정수여야 한다: '$READY_TIMEOUT_S'")
     [[ -x "$JUDGE" ]] || errs+=("판정기가 없거나 실행할 수 없다: $JUDGE")
     [[ -x "$SRC_DIR/myc_loader" ]] || errs+=("$SRC_DIR/myc_loader 가 없다. 먼저 빌드하라: cd src && ./build.sh")
     [[ -x "$SRC_DIR/run_container.sh" ]] || errs+=("$SRC_DIR/run_container.sh 가 없거나 실행할 수 없다")
@@ -625,12 +629,13 @@ for ((i = 0; i < READY_TIMEOUT_S * 10; i++)); do
 done
 # 준비되지 못했으면 로더가 남긴 stderr 를 들여써서 보여 주고 종료 코드 2 로 끝낸다.
 # sed 's/^/  /' : 각 줄 맨 앞(^)에 공백 두 칸을 붙인다.
-# LOADER_PID="" 는 cleanup 이 이미 죽은 프로세스를 끄려고 하지 않게 비워 두는 것이다.
+# LOADER_PID 는 비우지 않는다. 시간 초과로 반복문이 끝났으면 로더가 아직 살아 있을 수 있어서 cleanup 의 stop_loader 가 꺼야 한다
+# (이미 죽었으면 stop_loader 의 kill -0 이 실패해 아무것도 하지 않는다).
 if [[ $ready -ne 1 ]]; then
     echo "[loader] 준비되지 않았다. 로더 출력:" >&2
     sed 's/^/  /' "$WORK/loader.err" >&2
+    # 실패로 표시해 WORK 폴더를 남긴다. 로더 정리는 EXIT 트랩(cleanup -> stop_loader)이 한다
     ANY_FAIL=1
-    LOADER_PID=""
     exit 2
 fi
 

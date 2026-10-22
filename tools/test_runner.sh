@@ -382,6 +382,47 @@ check "ld4 detectors 순서가 알파벳순이 아니면 시작 거부" 2 MOCK_M
 check "ld5 mode 가 kill 이 아니면 시작 거부" 2 MOCK_MODE=normal MOCK_READY_MODE=observe MOCK_LOADER_RECORD="$LREC"
 expect_text "ld5 실제 mode 를 알림" "실제: mode: 'observe'"
 expect_loader_gone "ld5 거부한 뒤 로더가 정리됨"
+# 기록 파일의 pid 가 아직 살아 있는 가짜 로더이면 직접 끈다. 러너가 정리하지 못한 경우(테스트 실패)에 고아를 남기지 않으려는 것이다
+kill_leftover_loader() {
+    # pid 와 그 프로세스의 명령줄
+    local pid cmd
+    # 기록 파일의 "pid=<번호>" 줄에서 번호만 꺼낸다
+    pid="$(sed -n 's/^pid=//p' "$LREC")"
+    # 번호가 없거나 이미 끝났으면 할 일이 없다
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null || return 0
+    # 번호가 재사용된 다른 프로세스를 끄지 않도록, 명령줄에 가짜 로더 경로가 있을 때만 끈다 (NUL 구분을 공백으로 바꿔 읽는다)
+    cmd="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
+    # 가짜 로더가 아니면 손대지 않고 알린다
+    if [[ "$cmd" != *"$HERE/mock/myc_loader"* ]]; then
+        echo "  (참고) pid=$pid 는 가짜 로더가 아니라서 끄지 않음: $cmd"
+        return 0
+    fi
+    # 종료를 요청한다 (가짜 로더의 on_term 이 받는다)
+    kill -TERM "$pid" 2>/dev/null
+    # 최대 2초(0.1초 x 20) 동안 끝나기를 기다린다
+    for ((k = 0; k < 20; k++)); do
+        # 끝났으면 그만 기다린다
+        kill -0 "$pid" 2>/dev/null || break
+        # 잠깐 쉰다
+        sleep 0.1
+    done
+    # 그래도 살아 있으면 강제로 끝낸다
+    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+    # 테스트가 직접 정리했다는 사실을 남긴다 (이 경우 위의 expect_loader_gone 은 이미 FAIL 이다)
+    echo "  (참고) 러너가 정리하지 못한 가짜 로더 pid=$pid 를 테스트가 직접 끔"
+}
+# ld6: ready 줄 없이 살아 있는 로더 (BPF 로드가 멈춘 경우) -> 시간 초과로 시작 거부, 그리고 로더가 정리되어야 한다
+: >"$LREC"
+check "ld6 ready 가 시간 안에 안 나오면 시작 거부" 2 MOCK_MODE=hang MYC_READY_TIMEOUT_S=1 MOCK_LOADER_RECORD="$LREC"
+expect_text "ld6 이유를 알림" "준비되지 않았다"
+expect_loader_gone "ld6 시간 초과 뒤 로더가 정리됨"
+# 정리되지 않았으면 테스트가 직접 끈다
+kill_leftover_loader
+# ld7: 시간 초과 값이 양의 정수가 아니면 사전 점검에서 시작 거부 (로더를 띄우기 전)
+check "ld7a MYC_READY_TIMEOUT_S=abc 이면 시작 거부" 2 MOCK_MODE=normal MYC_READY_TIMEOUT_S=abc
+expect_text "ld7a 이유를 알림" "MYC_READY_TIMEOUT_S 는 1~9999 의 양의 정수여야 한다: 'abc'"
+check "ld7b MYC_READY_TIMEOUT_S=0 이면 시작 거부" 2 MOCK_MODE=normal MYC_READY_TIMEOUT_S=0
+expect_text "ld7b 이유를 알림" "MYC_READY_TIMEOUT_S 는 1~9999 의 양의 정수여야 한다: '0'"
 
 # --only 옵션: 이름이 맞는 시나리오만
 # 아래 세 묶음은 check 함수를 쓰지 않고 풀어 쓴 것이다 (옵션을 직접 넘기거나 확인 조건이 달라서).

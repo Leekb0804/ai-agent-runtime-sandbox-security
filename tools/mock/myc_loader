@@ -7,6 +7,8 @@
 #   - SIGTERM 이나 SIGINT 를 받으면 "[loader] log stats: ... lost=N" 를 내고,
 #     이어서 "[loader] ring buffer drops: exec=N tag_hit=M" 를 낸 뒤 종료한다 (src/loader/loader.c 의 report_drops 와 같은 형식)
 # MOCK_MODE=noready : 준비되지 못하고 바로 죽는 로더 (러너가 시작을 거부하는지 확인)
+# MOCK_MODE=hang    : 준비 메시지를 내지 않고 살아 있는 로더 (BPF 로드가 멈춘 경우. 러너가 시간 초과 뒤 로더를 끄는지 확인)
+#                     종료 신호를 받으면 평소처럼 끝나고, 받지 못해도 30초 뒤 스스로 끝난다 (테스트가 깨졌을 때 고아가 오래 남지 않게)
 # MOCK_LOST=N       : 종료 시 lost=N 을 보고하는 로더 (러너의 인프라 검증이 잡아내는지 확인)
 # MOCK_DROPS_EXEC=N : 종료 시 exec 드롭을 N 으로 보고 (기본 0)
 # MOCK_DROPS_TAG=N  : 종료 시 tag_hit 드롭을 N 으로 보고 (기본 0)
@@ -77,6 +79,19 @@ on_term() {
 # trap '명령' TERM INT : SIGTERM (러너가 보내는 종료 요청)이나 SIGINT (Ctrl+C)를 받으면 작은따옴표 안의 명령(on_term)을 실행한다.
 # loader.c 의 on_sig 와 그 뒤 종료 처리를 합친 역할이다.
 trap 'on_term' TERM INT
+
+# MOCK_MODE=hang : 준비 메시지를 내지 않고 종료 신호를 기다린다. 위의 trap 을 건 뒤라서 신호를 받으면 on_term 이 끝낸다
+if [[ "${MOCK_MODE:-}" == "hang" ]]; then
+    # 0.1 초씩 300 번 = 약 30초. 이 안에 신호가 오지 않으면 안전장치로 스스로 끝난다
+    for ((n = 0; n < 300; n++)); do
+        # 쉬는 동안 신호가 오면 sleep 이 끝난 뒤 on_term 이 실행된다
+        sleep 0.1
+    done
+    # 여기까지 왔다면 아무도 이 로더를 끄지 않은 것이다. 흔적을 남기고 오류(1)로 끝낸다
+    echo "[loader] mock: hang 30초 안전장치로 스스로 종료" >&2
+    # 신호로 끝난 것과 구분하려고 0 이 아닌 값으로 끝낸다
+    exit 1
+fi
 
 # 준비 메시지. >&2 로 stderr 에 낸다. 러너가 loader.err 파일에서 이 줄을 찾고 mode 와 detectors 를 비교한다.
 if [[ "${MOCK_MODE:-}" == "oldready" ]]; then

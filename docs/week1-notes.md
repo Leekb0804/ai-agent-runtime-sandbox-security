@@ -152,6 +152,11 @@
   - 비고: build.sh 에서 파일이 없으면 bpftool btf dump file /sys/kernel/btf/vmlinux format c 로 생성하고, BTF 가 없으면 안내와 함께 실패하게 한다. 커널 버전마다 달라지는 파일이므로 머신마다 생성.
   - 시점: w5
   - 해결: (미해결)
+- [ ] **stop_loader 의 wait 에 시간 제한이 없음** (`run_scenarios.sh`)
+  - 이유: 러너가 로더를 끌 때 TERM 을 보낸 뒤 wait 로 끝나기를 무한정 기다린다 (run_scenarios.sh 의 stop_loader 함수, 그 안의 wait). "w3d2: 러너가 ready 시간 초과 뒤에도 로더를 끄도록 고치고 회귀 테스트 추가" 커밋의 수정으로 ready 시간 초과 분기도 이 wait 를 지나게 되어, 로더가 커널 안에서 멈춰 TERM 에 반응하지 않으면 러너의 EXIT 정리가 끝나지 않는다. 진짜 로더는 TERM 을 받으면 stop 플래그만 세우므로 BPF 로드 도중이면 로드가 끝난 뒤에야 끝난다.
+  - 비고: 완화책은 TERM 을 보내고 몇 초 기다린 뒤 살아 있으면 KILL 을 보내는 것이다. 다만 커널 안에서 멈춘(D state) 프로세스는 KILL 에도 반응하지 않을 수 있다. 정상 종료 때의 stop_loader 호출도 같은 함수를 쓴다.
+  - 시점: w5
+  - 해결: (미해결)
 
 ## 수용한 한계
 
@@ -179,6 +184,7 @@
   - 반영: 종료 시 log stats 로 확인, 나쁘면 스레드 분리
 - **세션 칸 64개를 넘으면 밀려난 세션의 kill_requested가 사라짐** (`session_log.c`)
   - 이유: 밀려났다 다시 열린 세션에서 BLOCK이 오면 종료 요청이 한 번 더 나간다. 그 cgroup 이 이미 없으면 already_gone, 아직 있으면 sent 가 다시 나갈 수 있다.
+  - 비고: 관찰 모드(--no-kill)에서는 cgroup 이 살아 있어서, 밀려났다가 다시 열린 세션에서 would_kill 이 한 줄 더 남을 수 있다 (코드에서 읽은 추론이며 테스트로 확인하지 않았다).
   - 반영: README 한계 섹션
 - **세션이 끝나도 by-cgroup 링크가 남음** (`run_container.sh`)
   - 이유: 정리하는 코드가 없어 끝난 세션의 링크가 sessions/by-cgroup 에 쌓인다.

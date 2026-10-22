@@ -10,7 +10,9 @@ fi
 MEMORY="max"
 CPU="max"
 PIDS="max"
-ROOTFS_PATH="/home/dev/practice/mycontainer/busybox_rootfs"   # 이번엔 lowerdir(이미지 레이어)로 사용됨
+# rootfs(overlay 의 lowerdir, 이미지 레이어). 기본은 busybox rootfs, 환경변수 MYC_ROOTFS 가 비어 있지 않으면 그 경로를 쓴다
+# sudo 는 환경변수를 지우므로 sudo env MYC_ROOTFS=경로 ./run_container.sh 형태로 넘긴다
+ROOTFS_PATH="${MYC_ROOTFS:-/home/dev/practice/mycontainer/busybox_rootfs}"
 CONTAINER_DIR="/var/lib/mycontainer/containers/mycontainer-$$"  # upper/work/merged를 담을 디렉토리
 CMD=()
 MODE="run"
@@ -38,6 +40,33 @@ while [[ $# -gt 0 ]]; do
         *) ROOTFS_PATH="$1"; shift ;;
     esac
 done
+
+# MYC_ROOTFS 로 rootfs 를 바꿨으면 컨테이너를 만들기 전에 검사한다 (fail-closed). 하나라도 틀리면 이유 한 줄을 내고 끝낸다
+if [[ -n "${MYC_ROOTFS:-}" ]]; then
+    # (a) 절대 경로여야 한다 (상대 경로는 실행 위치에 따라 다른 폴더를 가리킨다)
+    if [[ "$ROOTFS_PATH" != /* ]]; then
+        # 어느 검사가 왜 틀렸는지 알린다
+        echo "[!] rootfs 검사 실패 (절대 경로 아님): $ROOTFS_PATH" >&2
+        # cgroup, 세션 폴더, netns 를 만들기 전이라 되돌릴 것이 없다
+        exit 1
+    fi
+    # (b) 디렉터리여야 한다 (없는 경로나 파일이면 overlay 마운트가 실패한다)
+    if [[ ! -d "$ROOTFS_PATH" ]]; then
+        # 어느 검사가 왜 틀렸는지 알린다
+        echo "[!] rootfs 검사 실패 (디렉터리가 없음): $ROOTFS_PATH" >&2
+        # 컨테이너를 만들기 전에 끝낸다
+        exit 1
+    fi
+    # (c) dev/null 이 문자 장치로 있어야 한다 (mycontainer_run 4.7단계가 이 노드 위에 호스트 /dev/null 을 bind mount 한다)
+    if [[ ! -c "$ROOTFS_PATH/dev/null" ]]; then
+        # 어느 검사가 왜 틀렸는지 알린다
+        echo "[!] rootfs 검사 실패 (dev/null 문자 장치가 없음): $ROOTFS_PATH/dev/null" >&2
+        # 컨테이너를 만들기 전에 끝낸다
+        exit 1
+    fi
+fi
+# 어떤 rootfs 를 쓰는지 알린다 (MYC_ROOTFS 가 있으면 그 값이고 검사를 통과했다)
+echo "[*] rootfs: $ROOTFS_PATH"
 
 if [[ "$CPU" == "max" ]]; then
     CPU_MAX_VALUE="max 100000"

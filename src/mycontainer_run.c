@@ -259,6 +259,33 @@ static void run_phase2(const char *lowerdir, const char *upperdir,
         die("proc bind mount 실패");
     }
 
+    /* ---------- 4.7단계: 호스트 /dev/null을 bind mount ---------- */
+    /*
+     * 사용자 네임스페이스 안에서 마운트한 overlay(2단계)에서는 rootfs의
+     * dev/null 장치 노드가 있어도 열리지 않는다 ("can't create /dev/null:
+     * Permission denied"). 사용자 네임스페이스 마운트는 장치 파일 열기를
+     * 막기 때문으로 추정한다 (mountinfo에는 nodev가 보이지 않는다).
+     * 4.5단계의 /proc처럼 호스트(devtmpfs)의 /dev/null을 그 노드 위에
+     * bind mount해서 우회한다. 이 bind mount 뒤에는 /dev/null이 열리는
+     * 것을 VM에서 확인했다. 원인 추정과 일치하지만 커널 플래그를 직접 본 것은 아니다.
+     * pivot_root(5단계) 이후에는 호스트 /dev/null이 보이지 않으므로 그 전에 한다.
+     * 대상 파일은 rootfs에 있어야 한다 (busybox rootfs는 dev/null을 갖고 있다).
+     * 실패하면 /dev/null 없이 진행하지 않고 컨테이너 시작을 중단한다.
+     * /dev/zero, /dev/urandom 등은 필요가 확인되면 같은 방식으로 추가한다.
+     */
+    char devnull_target[PATH_MAX];
+    snprintf(devnull_target, sizeof(devnull_target), "%s/dev/null", mergeddir);
+    printf("[*] 4.7단계: 호스트 /dev/null -> %s bind mount\n", devnull_target);
+    if (mount("/dev/null", devnull_target, NULL, MS_BIND, NULL) != 0) {
+        /* die()는 msg와 strerror(errno)만 출력하므로 경로와 errno 번호를 메시지에 넣는다 */
+        int saved_errno = errno;
+        char msg[PATH_MAX + 64];
+        snprintf(msg, sizeof(msg), "/dev/null bind mount 실패 (대상 %s, errno=%d)",
+                 devnull_target, saved_errno);
+        errno = saved_errno;
+        die(msg);
+    }
+
     /* ---------- 5단계: pivot_root 실행 ---------- */
     printf("[*] 5단계: pivot_root(merged, put_old) - root 자체를 교체\n");
     if (pivot_root(mergeddir, put_old) != 0) {

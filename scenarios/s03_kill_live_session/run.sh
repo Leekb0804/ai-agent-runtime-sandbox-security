@@ -8,6 +8,6 @@
 # 탐지기 선택 옵션이 생기면 러너가 이 시나리오에서 dummy_block 을 켜야 한다.
 # kill 이 실패하면 sleep 30 이 끝나 정상 종료(rc 0)한다. 판정(expect.json)이 놓치더라도
 # runtime.json 의 exit_code 137 검사가 FAIL 시킨다.
-# 컨테이너 안에서는 /dev/null 을 열 수 없으므로 /dev/null 리다이렉트를 쓰지 않는다.
+# /dev/null 리다이렉트가 없는 것은 컨테이너 안에서 /dev/null 이 열리지 않던 때(mycontainer_run 의 4.7단계 bind mount 이전)의 우회이다. 지금은 열리지만 스크립트는 바꾸지 않았다.
 # 실제 위험한 동작은 없다. 내용이 비어 있는 스크립트를 만들어 실행할 뿐이다.
 echo "#!/bin/sh" > /tmp/trigger; chmod +x /tmp/trigger; /tmp/trigger; sleep 30

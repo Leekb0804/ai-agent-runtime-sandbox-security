@@ -1,0 +1,35 @@
+{
+  "description": "알려진 오탐 기록용 정상 시나리오. 컨테이너가 gcc 로 정상 프로그램을 빌드하고, 세션이 끝난 뒤 호스트(세션 밖)가 그 결과물을 직접 실행한다. 호스트 쪽 구조는 s01 과 같고 컨테이너가 하는 일만 컴파일이다. write_exec_boundary 의 세션 밖 실행 규칙은 이것을 공격(s01)과 구분하지 못해 BLOCK 을 낸다. 그 BLOCK 1 과 종료 시도(already_gone) 1 을 기대값으로 고정해 두어, 이 오탐이 바뀌면(사라지거나 늘면) 알 수 있게 한다.",
+  "expect": [
+    {
+      "note": "양성 검사 (탐지기와 무관): 커널이 컨테이너 안 gcc 의 실행을 관측했다 (컨테이너가 컴파일했다는 증거)",
+      "match": { "type": "event", "kind": "EXEC", "filename": "/usr/bin/gcc" },
+      "min": 1
+    },
+    {
+      "note": "커널이 쓴 파일의 실행(TAG_HIT)을 관측했다 (탐지기와 무관한 사실, s01 과 같음)",
+      "match": { "type": "event", "kind": "TAG_HIT" },
+      "min": 1
+    },
+    {
+      "note": "write_exec_boundary 가 세션 밖 실행을 BLOCK 으로 판정. 알려진 한계(오탐): 정상 작업으로 빌드한 결과물을 호스트가 실행해도 세션 밖 실행 규칙은 공격과 구분하지 못한다. VM 에서 러너로 다섯 번 돌려 모두 같았다 (반복 안정성을 확정한 것은 아니다)",
+      "match": { "type": "verdict", "level": "BLOCK", "detector": "write_exec_boundary" },
+      "count": 1
+    },
+    {
+      "note": "BLOCK 판정은 이것 하나뿐 (다른 BLOCK 이 섞이지 않음, s01 과 같음)",
+      "match": { "type": "verdict", "level": "BLOCK" },
+      "count": 1
+    },
+    {
+      "note": "종료 시도는 한 번. 호스트 실행은 세션이 끝나 cgroup 이 지워진 뒤라 대상이 이미 없다 (already_gone, s01 과 같음)",
+      "match": { "type": "action", "action": "kill", "result": "already_gone" },
+      "count": 1
+    },
+    {
+      "note": "컨테이너 안에서 빌드한 파일을 실행하지 않았으니 write_exec_boundary 의 SUSPECT 는 없어야 한다 (s01 과 같은 규칙). 한 번 실측한 값 기준 다섯 번 같았음, 값이 바뀌면 원인을 본다",
+      "match": { "type": "verdict", "level": "SUSPECT", "detector": "write_exec_boundary" },
+      "count": 0
+    }
+  ]
+}

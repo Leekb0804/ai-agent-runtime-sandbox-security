@@ -41,6 +41,8 @@ LREC="$(mktemp)"
 ENVREC="$(mktemp)"
 # rootfs 선택 묶음의 가짜 dev rootfs 폴더 (이 테스트를 실행한 사용자 소유. 내용은 비어 있고 가짜 agent-run 은 들여다보지 않는다)
 FAKEDEV="$(mktemp -d)"
+# 가짜 누수 점검기(tools/mock/leak_check.sh)가 받은 호출을 적는 파일 (MOCK_LEAK_RECORD). 반복 묶음에서 쓴다
+LEAKREC="$(mktemp)"
 # 테스트를 부른 셸의 값이 러너에 새어 들어가 결과가 흔들리지 않게 지운다 (필요한 케이스는 check 의 인자로 직접 준다)
 unset MYC_DEV_ROOTFS_DIR MYC_ROOTFS
 # check 가 러너에 넘길 추가 인자 (예: --only 패턴). 기본은 없음
@@ -97,7 +99,7 @@ failures=0
 OUT="$(mktemp)"
 # trap '명령' EXIT : 스크립트가 어떻게 끝나든 마지막에 그 명령을 실행한다. 여기서는 임시 파일을 지운다.
 # 마지막의 remove_scen_tmp 는 러너 작업 폴더를 모은 전용 폴더를 지운다 (안전장치는 함수 안에 있다)
-trap 'rm -f "$OUT" "$MAPCOUNT" "$LREC" "$ENVREC"; rm -rf "$SCEN" "$CONT" "$CGR" "$FAKEDEV"; remove_scen_tmp "$SCENTMP"' EXIT
+trap 'rm -f "$OUT" "$MAPCOUNT" "$LREC" "$ENVREC" "$LEAKREC"; rm -rf "$SCEN" "$CONT" "$CGR" "$FAKEDEV"; remove_scen_tmp "$SCENTMP"' EXIT
 
 # 러너 출력(OUT 파일)에 "결과: FAILED" 줄이 있는지 확인한다. 있으면 참(0), 없으면 거짓(1)을 돌려준다.
 # 러너가 종료 코드 1 로 끝나는 exit 는 run_scenarios.sh 맨 끝 한 곳뿐이고 그 바로 앞에서 이 줄을 낸다.
@@ -498,6 +500,124 @@ check "rn5 상대 경로라도 dev 시나리오가 없으면 통과" 0 MYC_DEV_R
 cd - >/dev/null || exit 2
 # 정리: 임시 시나리오를 지우고 추가 인자를 비운다
 rm -rf "$SCEN/s_rf_dev" "$SCEN/s_rf_plain" "$SCEN/n_rf_plain"
+RUNNER_ARGS=()
+echo
+
+echo "[--only 여러 번 (합집합)]"
+# o1: 두 패턴의 합집합을 고른다
+RUNNER_ARGS=(--only s00_benign --only 's99*')
+check "o1 --only 를 두 번 쓰면 두 시나리오를 모두 돎" 0 MOCK_MODE=normal
+expect_text "o1 두 개 실행" "시나리오 2/2 통과"
+# o2: 한 번만 쓰는 기존 사용
+RUNNER_ARGS=(--only s00_benign)
+check "o2 --only 한 번은 기존처럼 하나만 돎" 0 MOCK_MODE=normal
+expect_text "o2 하나 실행" "시나리오 1/1 통과"
+# o3: 패턴 하나라도 맞는 시나리오가 없으면 하나도 돌기 전에 거부
+RUNNER_ARGS=(--only s00_benign --only 'zzz*')
+check "o3 맞는 시나리오가 없는 패턴이 섞이면 시작 거부" 2 MOCK_MODE=normal
+expect_text "o3 그 패턴을 알림" "--only 패턴에 맞는 시나리오가 없다: 'zzz*'"
+# 시나리오 실행 단계까지 가지 않았어야 한다
+if grep -qF "== 시나리오 실행" "$OUT"; then echo "  FAIL  o3 시나리오를 돌기 시작함"; failures=$((failures + 1)); else echo "  PASS  o3 시나리오를 하나도 돌리지 않음"; fi
+# o4: 값이 없는 --only
+RUNNER_ARGS=(--only)
+check "o4 --only 에 값이 없으면 거부" 2 MOCK_MODE=normal
+expect_text "o4 이유를 알림" "--only 에는 패턴 값이 필요하다"
+RUNNER_ARGS=()
+echo
+
+echo "[--repeat (반복과 누수 점검 호출)]"
+# 반복 묶음 공통: 가짜 누수 점검기와 그 호출 기록 파일
+LEAK_ENV=(MYC_LEAK_CHECK="$HERE/mock/leak_check.sh" MOCK_LEAK_RECORD="$LEAKREC")
+# 기록 파일이 기대한 줄들과 정확히 같은지 본다. 인자: 설명, 기대 줄들
+expect_leakrec() {
+    # 설명과 기대 내용
+    local msg="$1" want
+    shift
+    # 줄들을 이어 기대 내용을 만든다 (끝 개행 없음)
+    want="$(printf '%s\n' "$@")"
+    # 비교
+    if [[ "$(<"$LEAKREC")" == "$want" ]]; then
+        printf '  PASS  %s\n' "$msg"
+    else
+        # 기대와 실제를 보여 준다
+        printf '  FAIL  %s\n        기대:\n' "$msg"; sed 's/^/          /' <<<"$want"
+        printf '        실제:\n'; sed 's/^/          /' "$LEAKREC"
+        failures=$((failures + 1))
+    fi
+}
+# rp1~rp4: 라운드 값 검증 (사전 점검에서 거부)
+RUNNER_ARGS=(--repeat abc --only s00_benign)
+check "rp1 --repeat abc 이면 시작 거부" 2 MOCK_MODE=normal "${LEAK_ENV[@]}"
+expect_text "rp1 이유를 알림" "--repeat 는 1~9999 의 양의 정수여야 한다: 'abc'"
+RUNNER_ARGS=(--repeat 0 --only s00_benign)
+check "rp2 --repeat 0 이면 시작 거부" 2 MOCK_MODE=normal "${LEAK_ENV[@]}"
+RUNNER_ARGS=(--repeat 10000 --only s00_benign)
+check "rp3 --repeat 10000 이면 시작 거부" 2 MOCK_MODE=normal "${LEAK_ENV[@]}"
+RUNNER_ARGS=(--only s00_benign --repeat)
+check "rp4 --repeat 에 값이 없으면 거부" 2 MOCK_MODE=normal "${LEAK_ENV[@]}"
+expect_text "rp4 이유를 알림" "--repeat 에는 라운드 수가 필요하다"
+# rp5: 누수 점검기를 실행할 수 없으면 시작 거부
+RUNNER_ARGS=(--repeat 2 --only s00_benign)
+check "rp5 누수 점검기가 없으면 시작 거부" 2 MOCK_MODE=normal MYC_LEAK_CHECK=/no/such/leak_check.sh
+expect_text "rp5 이유를 알림" "누수 점검기가 없거나 실행할 수 없다: /no/such/leak_check.sh"
+# rp6: 11 라운드. 시작 전(로더 없음), 준비 직후, 10 라운드 뒤, 끝에 스냅샷을 찍고 compare 를 부른다
+RUNNER_ARGS=(--repeat 11 --only s00_benign)
+: >"$LEAKREC"
+check "rp6 --repeat 11 은 11 라운드를 돌고 합격" 0 MOCK_MODE=normal "${LEAK_ENV[@]}"
+expect_text "rp6 세션 11개" "시나리오 11/11 통과"
+expect_leakrec "rp6 스냅샷 시점과 인자 (라벨 라운드 세션 로더), 그리고 compare" "snapshot start 0 0 loader=없음" "snapshot ready 0 0 loader=있음" "snapshot r10 10 10 loader=있음" "snapshot end 11 11 loader=있음" "compare"
+expect_text "rp6 성공해도 작업 폴더(스냅샷)를 남김" "로그 보관:"
+# rp7: 두 시나리오를 3 라운드. 세션 수는 라운드 x 시나리오 수
+RUNNER_ARGS=(--repeat 3 --only s00_benign --only 's99*')
+: >"$LEAKREC"
+check "rp7 두 시나리오 x 3 라운드" 0 MOCK_MODE=normal "${LEAK_ENV[@]}"
+expect_text "rp7 세션 6개" "시나리오 6/6 통과"
+expect_leakrec "rp7 끝 스냅샷의 세션 수는 6" "snapshot start 0 0 loader=없음" "snapshot ready 0 0 loader=있음" "snapshot end 3 6 loader=있음" "compare"
+# rp8: compare 가 1(누수)이면 러너도 1 (결과 줄 포함)
+RUNNER_ARGS=(--repeat 2 --only s00_benign)
+check "rp8 compare 가 누수(1)를 내면 러너도 1" 1 MOCK_MODE=normal "${LEAK_ENV[@]}" MOCK_LEAK_COMPARE_RC=1
+expect_text "rp8 결과 줄" "결과: FAILED (누수 점검)"
+# rp9: compare 가 2(판정 불가)이면 러너도 2
+check "rp9 compare 가 판정 불가(2)를 내면 러너도 2" 2 MOCK_MODE=normal "${LEAK_ENV[@]}" MOCK_LEAK_COMPARE_RC=2
+expect_text "rp9 결과 줄" "결과: 누수 판정 불가 (leak_check compare 종료 코드 2)"
+# rp10: 반복 중 FAIL 이면 바로 멈추고 compare 를 부르지 않는다
+RUNNER_ARGS=(--repeat 3 --only s00_benign)
+: >"$LEAKREC"
+check "rp10 반복 중 FAIL 이면 1 로 멈춤" 1 MOCK_MODE=wrong "${LEAK_ENV[@]}"
+expect_text "rp10 멈춘 지점을 알림" "반복 중 FAIL 로 멈춤 (라운드 1, 세션 1)"
+expect_text "rp10 한 번만 돎" "시나리오 0/1 통과"
+expect_leakrec "rp10 끝 스냅샷과 compare 를 부르지 않음" "snapshot start 0 0 loader=없음" "snapshot ready 0 0 loader=있음"
+# rp11: 스냅샷이 실패하면 2 로 멈춘다
+RUNNER_ARGS=(--repeat 2 --only s00_benign)
+check "rp11 스냅샷이 실패하면 2 로 멈춤" 2 MOCK_MODE=normal "${LEAK_ENV[@]}" MOCK_LEAK_SNAPSHOT_RC=2
+expect_text "rp11 이유를 알림" "누수 점검 스냅샷 실패 (라벨 start)"
+# li1~li4: --leak-interval 값 검증 (사전 점검에서 거부)
+RUNNER_ARGS=(--repeat 2 --leak-interval abc --only s00_benign)
+check "li1 --leak-interval abc 이면 시작 거부" 2 MOCK_MODE=normal "${LEAK_ENV[@]}"
+expect_text "li1 이유를 알림" "--leak-interval 은 1~9999 의 양의 정수여야 한다: 'abc'"
+RUNNER_ARGS=(--repeat 2 --leak-interval 0 --only s00_benign)
+check "li2 --leak-interval 0 이면 시작 거부" 2 MOCK_MODE=normal "${LEAK_ENV[@]}"
+RUNNER_ARGS=(--repeat 2 --leak-interval 10000 --only s00_benign)
+check "li3 --leak-interval 10000 이면 시작 거부" 2 MOCK_MODE=normal "${LEAK_ENV[@]}"
+RUNNER_ARGS=(--repeat 2 --only s00_benign --leak-interval)
+check "li4 --leak-interval 에 값이 없으면 거부" 2 MOCK_MODE=normal "${LEAK_ENV[@]}"
+expect_text "li4 이유를 알림" "--leak-interval 에는 라운드 수가 필요하다"
+# li5: --repeat 없이 쓰면 거부 (시나리오를 하나도 돌리지 않는다)
+RUNNER_ARGS=(--leak-interval 3 --only s00_benign)
+: >"$LEAKREC"
+check "li5 --repeat 없이 --leak-interval 을 쓰면 거부" 2 MOCK_MODE=normal "${LEAK_ENV[@]}"
+expect_text "li5 이유를 알림" "--leak-interval 은 --repeat 와 함께만 쓸 수 있다"
+if grep -qF "== 시나리오 실행" "$OUT"; then echo "  FAIL  li5 시나리오를 돌기 시작함"; failures=$((failures + 1)); else echo "  PASS  li5 시나리오를 하나도 돌리지 않음"; fi
+# li6: K=3, 7 라운드 -> 3, 6 라운드 뒤에 중간 스냅샷, 그리고 끝
+RUNNER_ARGS=(--repeat 7 --leak-interval 3 --only s00_benign)
+: >"$LEAKREC"
+check "li6 --repeat 7 --leak-interval 3 은 합격" 0 MOCK_MODE=normal "${LEAK_ENV[@]}"
+expect_leakrec "li6 3, 6 라운드 뒤에 스냅샷 (라벨 라운드 세션 로더)" "snapshot start 0 0 loader=없음" "snapshot ready 0 0 loader=있음" "snapshot r3 3 3 loader=있음" "snapshot r6 6 6 loader=있음" "snapshot end 7 7 loader=있음" "compare"
+# rp12: --repeat 가 없으면 누수 점검기를 부르지 않는다 (기존과 같음)
+RUNNER_ARGS=(--only s00_benign)
+: >"$LEAKREC"
+check "rp12 --repeat 가 없으면 기존과 같이 돎" 0 MOCK_MODE=normal "${LEAK_ENV[@]}"
+if [[ -s "$LEAKREC" ]]; then echo "  FAIL  rp12 누수 점검기가 불렸음"; sed 's/^/        /' "$LEAKREC"; failures=$((failures + 1)); else echo "  PASS  rp12 누수 점검기를 부르지 않음"; fi
 RUNNER_ARGS=()
 echo
 

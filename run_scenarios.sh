@@ -7,8 +7,10 @@
 # PASS/FAIL 을 출력한다. 한 명령으로 전체를 돌린다.
 #
 #     sudo ./run_scenarios.sh                # 전체
-#     sudo ./run_scenarios.sh --only 's99*'  # 이름이 맞는 시나리오만
+#     sudo ./run_scenarios.sh --only 's99*'  # 이름이 맞는 시나리오만 (여러 번 쓰면 합집합)
 #     sudo ./run_scenarios.sh --keep         # 성공해도 로그를 보관
+#     sudo ./run_scenarios.sh --repeat 100   # 한 로더 수명 안에서 N 라운드 반복하고 누수 점검 (tools/leak_check.sh)
+#     sudo ./run_scenarios.sh --repeat 6 --leak-interval 1   # 중간 스냅샷 간격 (기본 10 라운드, --repeat 와 함께만)
 #
 # ===== 시나리오 형식 =====
 #   scenarios/<이름>/run.sh        컨테이너 안에서 실행할 스크립트 (러너가 /bin/sh -c 로 넘김)
@@ -90,16 +92,22 @@ RUNTIME_TRIES=20        # cgroup 소멸, 맵 항목 소멸을 확인하는 최�
 # 일부러 알파벳순이 아닌 순서로 둔다. ready 줄은 로더가 정렬해서 내므로, 아래 want_dets 의 정렬이 빠지면 테스트(ld1)가 잡는다.
 RUNNER_DETECTORS="write_exec_boundary,dummy_block,dummy_suspect"
 
-# 옵션 상태. KEEP=1 이면 성공해도 로그를 보관한다. FILTER 는 --only 로 받은 이름 패턴이다.
+# 옵션 상태. KEEP=1 이면 성공해도 로그를 보관한다. FILTERS 는 --only 로 받은 이름 패턴들이다 (여러 번 받으면 합집합).
 KEEP=0
-FILTER=""
+FILTERS=()
+# --repeat 로 받은 라운드 수. 비어 있으면 반복 모드가 아니다 (기존 동작과 같다)
+REPEAT=""
+# --leak-interval 로 받은 중간 스냅샷 간격(라운드). 비어 있으면 기본 10 을 쓴다. --repeat 와 함께만 쓸 수 있다
+LEAK_INTERVAL=""
+# 반복 모드의 누수 점검기. 테스트에서만 MYC_LEAK_CHECK 로 가짜를 끼운다 (tools/mock/leak_check.sh)
+LEAK_CHECK="${MYC_LEAK_CHECK:-$HERE/tools/leak_check.sh}"
 
 # 함수 정의 : 이름() { ... }. 부를 때는 이름만 쓴다 (usage). 함수 안의 $1 은 함수에 준 인자이다 (스크립트의 $1 과 별개).
-# sed -n '3,12p' "$0" : 이 파일 자신의 3~12번째 줄만 출력한다. 즉 --help 는 위쪽 주석의 사용법 부분을 그대로 보여 준다.
-#    그래서 파일 맨 위 12줄은 줄 수를 바꾸면 안 된다 (줄이 추가되면 --help 출력이 어긋난다).
+# sed -n '3,14p' "$0" : 이 파일 자신의 3~14번째 줄만 출력한다. 즉 --help 는 위쪽 주석의 사용법 부분을 그대로 보여 준다.
+#    그래서 파일 맨 위 14줄은 줄 수를 바꾸면 안 된다 (줄이 추가되면 --help 출력이 어긋난다).
 # 두 번째 sed 는 각 줄 앞의 "# " 를 지운다.
 usage() {
-    sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
 }
 
@@ -113,13 +121,51 @@ usage() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --keep) KEEP=1; shift ;;
-        # --only 패턴 : 옵션 바로 뒤의 값($2)을 FILTER 에 넣고, 옵션과 값 둘을 소비한다 (shift 2).
-        #               ${2:-} 는 값이 안 왔을 때 빈 문자열을 쓰라는 뜻이다.
-        --only) FILTER="${2:-}"; shift 2 ;;
+        # --only 패턴 : 옵션 바로 뒤의 값($2)을 FILTERS 에 더하고, 옵션과 값 둘을 소비한다 (shift 2).
+        #               여러 번 쓰면 패턴들의 합집합을 고른다. 값이 없으면 거부한다 (shift 2 가 실패해 같은 자리를 도는 것도 막는다)
+        --only)
+            # 값이 없으면 사용 오류로 끝낸다
+            [[ $# -ge 2 ]] || { echo "--only 에는 패턴 값이 필요하다 (--help 참고)" >&2; exit 2; }
+            # 패턴을 목록에 더한다
+            FILTERS+=("$2")
+            # 옵션과 값을 소비한다
+            shift 2 ;;
+        # --repeat N : 선택한 시나리오를 한 로더 수명 안에서 N 라운드 돈다. 값 검사는 사전 점검에서 한다
+        --repeat)
+            # 값이 없으면 사용 오류로 끝낸다
+            [[ $# -ge 2 ]] || { echo "--repeat 에는 라운드 수가 필요하다 (--help 참고)" >&2; exit 2; }
+            # 라운드 수를 받는다
+            REPEAT="$2"
+            # 옵션과 값을 소비한다
+            shift 2 ;;
+        # --leak-interval K : 반복 모드에서 K 라운드마다 중간 스냅샷을 찍는다. 값 검사는 사전 점검에서 한다
+        --leak-interval)
+            # 값이 없으면 사용 오류로 끝낸다
+            [[ $# -ge 2 ]] || { echo "--leak-interval 에는 라운드 수가 필요하다 (--help 참고)" >&2; exit 2; }
+            # 간격을 받는다
+            LEAK_INTERVAL="$2"
+            # 옵션과 값을 소비한다
+            shift 2 ;;
         -h|--help) usage ;;
         *) echo "알 수 없는 옵션: $1 (--help 참고)" >&2; exit 2 ;;
     esac
 done
+
+# 시나리오 이름이 실행 대상인지 본다. --only 가 없으면 전부, 있으면 패턴 중 하나라도 맞으면 대상이다 (사전 점검과 메인이 같이 쓴다)
+selected() {
+    # 시나리오 이름과 반복 변수
+    local n="$1" p
+    # 패턴이 하나도 없으면 전부 대상이다
+    ((${#FILTERS[@]} == 0)) && return 0
+    # 패턴을 하나씩 본다
+    for p in "${FILTERS[@]}"; do
+        # 패턴은 셸 글롭이라 따옴표 없이 비교한다
+        # shellcheck disable=SC2053
+        [[ "$n" == $p ]] && return 0
+    done
+    # 맞는 패턴이 없다
+    return 1
+}
 
 # ---------------------------------------------------------------------------------------------
 # 1. 사전 점검
@@ -168,6 +214,36 @@ preflight() {
         errs+=("run_container.sh 가 MYC_SESSIONS_ROOT 를 지원하지 않는다 (SESSIONS_ROOT=\"\${MYC_SESSIONS_ROOT:-/var/lib/mycontainer/sessions}\" 로 바꿔야 한다)")
     fi
     [[ -d "$SCEN_DIR" ]] || errs+=("시나리오 폴더가 없다: $SCEN_DIR")
+    # 반복 모드: 라운드 수는 1~9999 의 양의 정수여야 하고, 누수 점검기를 실행할 수 있어야 한다
+    if [[ -n "$REPEAT" ]]; then
+        # 0, 글자, 음수, 너무 큰 값은 거부한다
+        [[ "$REPEAT" =~ ^[1-9][0-9]{0,3}$ ]] || errs+=("--repeat 는 1~9999 의 양의 정수여야 한다: '$REPEAT'")
+        # 점검기가 없으면 반복은 돌아도 누수를 판정할 수 없으므로 시작하지 않는다
+        [[ -x "$LEAK_CHECK" ]] || errs+=("누수 점검기가 없거나 실행할 수 없다: $LEAK_CHECK")
+    fi
+    # 스냅샷 간격: 반복 모드에서만 쓸 수 있고, --repeat 와 같은 범위(1~9999)여야 한다
+    if [[ -n "$LEAK_INTERVAL" ]]; then
+        # 반복 모드가 아니면 쓸 곳이 없으므로 거부한다 (조용히 무시하지 않는다)
+        [[ -n "$REPEAT" ]] || errs+=("--leak-interval 은 --repeat 와 함께만 쓸 수 있다")
+        # 0, 글자, 음수, 너무 큰 값은 거부한다
+        [[ "$LEAK_INTERVAL" =~ ^[1-9][0-9]{0,3}$ ]] || errs+=("--leak-interval 은 1~9999 의 양의 정수여야 한다: '$LEAK_INTERVAL'")
+    fi
+    # --only 패턴마다 맞는 시나리오가 하나 이상 있어야 한다 (오타로 일부가 조용히 빠지는 것을 막는다)
+    local p hit sd
+    for p in "${FILTERS[@]}"; do
+        # 이 패턴에 맞는 폴더를 찾았는지 표시
+        hit=0
+        # 메인과 같은 규칙([sn]*/ 폴더)으로 찾는다
+        for sd in "$SCEN_DIR"/[sn]*/; do
+            # 폴더가 아니면 건너뛴다
+            [[ -d "$sd" ]] || continue
+            # 끝의 / 를 떼고 이름만 본다. 패턴은 글롭이라 따옴표 없이 비교한다
+            # shellcheck disable=SC2053
+            if [[ "$(basename "${sd%/}")" == $p ]]; then hit=1; break; fi
+        done
+        # 하나도 없으면 그 패턴을 적어 거부한다
+        [[ $hit -eq 1 ]] || errs+=("--only 패턴에 맞는 시나리오가 없다: '$p'")
+    done
 
     # 실행할 시나리오의 runtime.json 을 미리 검증한다. 오타로 검사가 조용히 빠지는 것을 막으려는 것이다.
     # need_bpftool : map_entry_gone 을 쓰는 시나리오가 하나라도 있으면 1
@@ -181,8 +257,7 @@ preflight() {
         # 끝의 / 를 뗀 경로
         d="${d%/}"
         # --only 패턴과 맞지 않으면 실행하지 않을 시나리오이므로 건너뛴다
-        # shellcheck disable=SC2053
-        if [[ -n "$FILTER" && "$(basename "$d")" != $FILTER ]]; then continue; fi
+        selected "$(basename "$d")" || continue
         # rootfs 파일이 있으면 이름을 읽어 확인한다 (runtime.json 검사보다 먼저 한다. 아래의 continue 에 건너뛰지 않게)
         if [[ -f "$d/rootfs" ]]; then
             # 앞뒤 공백과 개행을 자른 이름
@@ -654,6 +729,38 @@ mkdir -p "$SESS_ROOT/by-cgroup"
 LOADER_PID=""
 ANY_FAIL=0
 
+# ---- 반복 모드(--repeat)의 누수 점검 준비 ----
+# 스냅샷은 작업 폴더 안 leak/ 에 모은다. 반복 모드에서는 결과를 나중에 봐야 하므로 성공해도 작업 폴더를 남긴다 (KEEP=1)
+LEAK_DIR="$WORK/leak"
+# 점검기 snapshot 을 부른다. 인자: 라벨, 라운드 수, 지금까지 실행한 세션 수
+# 러너가 쓰는 경로를 환경변수로 넘겨 같은 곳을 세게 한다. 로더가 안 떠 있으면 LOADER_PID 가 비어 FD 와 RSS 는 비워 둔다
+leak_snapshot() {
+    # 점검기를 실행하고 출력은 leak/snapshot.log 에 모은다. 종료 코드를 그대로 돌려준다
+    MYC_LEAK_SESS_ROOT="$SESS_ROOT" MYC_LEAK_SELF_WORK="$WORK" MYC_LEAK_TMP="${MYC_SCEN_TMP:-/tmp}" \
+        MYC_LEAK_CGROUP_ROOT="$CHECK_CGROUP_ROOT" MYC_LEAK_CONTAINERS_ROOT="$CONTAINERS_ROOT" \
+        MYC_LEAK_BPFTOOL="$BPFTOOL" MYC_LEAK_PIN="$SESSION_CGROUPS_PIN" MYC_LEAK_LOADER_PID="$LOADER_PID" \
+        "$LEAK_CHECK" snapshot "$LEAK_DIR" "$1" "$2" "$3" >>"$LEAK_DIR/snapshot.log" 2>&1
+}
+# 스냅샷이 실패하면 반복을 믿을 수 없으므로 멈춘다 (종료 코드 2). 인자는 leak_snapshot 과 같다
+leak_snapshot_or_die() {
+    # 성공하면 그대로 돌아간다
+    leak_snapshot "$@" && return 0
+    # 실패 사실과 로그 위치를 알린다
+    echo "[runner] 누수 점검 스냅샷 실패 (라벨 $1). 로그: $LEAK_DIR/snapshot.log" >&2
+    # 작업 폴더를 남기고 종료 코드 2 로 끝낸다 (로더는 EXIT 트랩이 끈다)
+    ANY_FAIL=1
+    exit 2
+}
+# 반복 모드이면 폴더를 만들고, 로더를 띄우기 전의 상태를 첫 스냅샷으로 남긴다
+if [[ -n "$REPEAT" ]]; then
+    # 성공해도 작업 폴더(스냅샷과 로그)를 남긴다
+    KEEP=1
+    # 스냅샷 폴더를 만든다
+    mkdir -p "$LEAK_DIR"
+    # 로더 시작 전 (라운드 0, 세션 0)
+    leak_snapshot_or_die start 0 0
+fi
+
 # kill -0 PID  : 신호를 보내지 않고 "그 프로세스가 살아 있는지"만 확인한다.
 # kill -TERM PID : 종료를 요청한다 (SIGTERM). 로더는 종료할 때 log stats 한 줄과 ring buffer drops 한 줄을 남긴다.
 # wait PID     : 그 백그라운드 프로세스가 끝날 때까지 기다린다.
@@ -740,38 +847,69 @@ if [[ "$ready_mode" != "kill" || "$ready_dets" != "$want_dets" ]]; then
     exit 2
 fi
 
+# 반복 모드이면 로더가 준비된 직후(세션 0)를 스냅샷으로 남긴다. 로더 FD 의 고정분은 이 값이다
+[[ -n "$REPEAT" ]] && leak_snapshot_or_die ready 0 0
+
 echo "== 시나리오 실행 (세션 루트: $SESS_ROOT) =="
 total=0
 passed=0
 failed_names=()
-# for dir in "$SCEN_DIR"/[sn]*/ : scenarios 아래에서 s 또는 n 으로 시작하는 폴더들을 하나씩 (패턴 [sn]*/ 가 폴더 목록으로 펼쳐진다).
-# [sn] 은 s 나 n 한 글자이다. 펼친 목록은 이름순이라 n 시나리오가 s 시나리오보다 먼저 돈다.
-for dir in "$SCEN_DIR"/[sn]*/; do
-    # continue : 이번 반복을 건너뛰고 다음으로 간다. 폴더가 아니면 (패턴과 맞는 것이 없을 때 등) 건너뛴다.
-    [[ -d "$dir" ]] || continue
-    # ${dir%/} : 변수 값의 끝에 있는 / 를 한 번 떼어낸다 (위 패턴이 붙인 마지막 /).
-    dir="${dir%/}"
-    name="$(basename "$dir")"
-    # --only 패턴이 있으면 이름이 맞는 것만 실행 (패턴은 셸 글롭이라 따옴표 없이 비교한다)
-    # shellcheck disable=SC2053
-    if [[ -n "$FILTER" && "$name" != $FILTER ]]; then continue; fi
+# 라운드 수. 반복 모드가 아니면 1 라운드이고 기존과 같다
+ROUNDS="${REPEAT:-1}"
+# 반복 모드에서 FAIL 이 나 멈췄으면 1
+stopped=0
+# 라운드 반복. 라운드마다 선택한 시나리오를 한 번씩 돈다
+for ((round = 1; round <= ROUNDS; round++)); do
+    # for dir in "$SCEN_DIR"/[sn]*/ : scenarios 아래에서 s 또는 n 으로 시작하는 폴더들을 하나씩 (패턴 [sn]*/ 가 폴더 목록으로 펼쳐진다).
+    # [sn] 은 s 나 n 한 글자이다. 펼친 목록은 이름순이라 n 시나리오가 s 시나리오보다 먼저 돈다.
+    for dir in "$SCEN_DIR"/[sn]*/; do
+        # continue : 이번 반복을 건너뛰고 다음으로 간다. 폴더가 아니면 (패턴과 맞는 것이 없을 때 등) 건너뛴다.
+        [[ -d "$dir" ]] || continue
+        # ${dir%/} : 변수 값의 끝에 있는 / 를 한 번 떼어낸다 (위 패턴이 붙인 마지막 /).
+        dir="${dir%/}"
+        name="$(basename "$dir")"
+        # --only 패턴이 있으면 이름이 맞는 것만 실행한다 (selected 함수 참고)
+        selected "$name" || continue
 
-    # $(( )) 는 계산이다. 시나리오 개수를 하나 센다.
-    total=$((total + 1))
-    # if 뒤에 함수를 바로 쓰면 그 함수의 종료 코드로 분기한다 (0 이면 참). run_one 은 통과하면 0 을 돌려준다.
-    if run_one "$dir"; then
-        passed=$((passed + 1))
-    else
-        # 배열에 원소 추가. 실패한 시나리오 이름을 모아 두었다가 요약에서 보여 준다.
-        failed_names+=("$name")
-        ANY_FAIL=1
+        # $(( )) 는 계산이다. 시나리오 개수를 하나 센다.
+        total=$((total + 1))
+        # if 뒤에 함수를 바로 쓰면 그 함수의 종료 코드로 분기한다 (0 이면 참). run_one 은 통과하면 0 을 돌려준다.
+        if run_one "$dir"; then
+            passed=$((passed + 1))
+        else
+            # 배열에 원소 추가. 실패한 시나리오 이름을 모아 두었다가 요약에서 보여 준다.
+            failed_names+=("$name")
+            ANY_FAIL=1
+            # 반복 모드에서는 한 번이라도 FAIL 이면 바로 멈춘다 (작업 폴더는 남는다)
+            if [[ -n "$REPEAT" ]]; then
+                # 멈췄다고 표시하고 안쪽 반복을 빠져나간다
+                stopped=1
+                break
+            fi
+        fi
+    done
+    # 멈췄으면 라운드 반복도 빠져나간다
+    [[ $stopped -eq 1 ]] && break
+    # 반복 모드에서는 K 라운드마다(기본 10, --leak-interval) 스냅샷을 남긴다 (로더가 떠 있는 상태)
+    if [[ -n "$REPEAT" ]] && ((round % ${LEAK_INTERVAL:-10} == 0)); then
+        # 라벨, 라운드 수, 지금까지 실행한 세션 수
+        leak_snapshot_or_die "r$round" "$round" "$total"
     fi
 done
+# 반복 모드에서 끝까지 돌았으면 로더를 끄기 전에 마지막 스냅샷을 남긴다 (FD 와 RSS 를 보려면 로더가 떠 있어야 한다)
+if [[ -n "$REPEAT" && $stopped -eq 0 ]]; then
+    # 라벨, 마지막 라운드 수, 전체 세션 수
+    leak_snapshot_or_die end "$ROUNDS" "$total"
+fi
+# 멈췄으면 그 사실을 알린다. 비교는 하지 않는다 (반복을 다 돌지 않아 선형과 포화 판정이 의미가 없다)
+if [[ $stopped -eq 1 ]]; then
+    echo "[runner] 반복 중 FAIL 로 멈춤 (라운드 $round, 세션 $total). 누수 비교는 하지 않는다"
+fi
 
 # 패턴과 맞는 시나리오가 하나도 없으면 "통과"처럼 보이지 않게 오류로 끝낸다 (종료 코드 2).
-# ${FILTER:-전체} 는 FILTER 가 비어 있으면 "전체" 라고 표시한다.
+# ${FILTERS[*]:-전체} 는 패턴이 없으면 "전체" 라고 표시한다.
 if ((total == 0)); then
-    echo "실행한 시나리오가 없다 (패턴: '${FILTER:-전체}')" >&2
+    echo "실행한 시나리오가 없다 (패턴: '${FILTERS[*]:-전체}')" >&2
     ANY_FAIL=1
     exit 2
 fi
@@ -867,12 +1005,33 @@ if ((${#failed_names[@]} > 0)); then
 fi
 [[ $infra_fail -eq 1 ]] && echo "인프라 검증 실패"
 
+# 반복 모드이고 끝까지 돌았으면 누수 비교를 한다. 0 합격, 1 누수나 기준 위반, 2 판정 불가
+leak_rc=0
+if [[ -n "$REPEAT" && $stopped -eq 0 ]]; then
+    echo
+    echo "== 누수 점검 ($ROUNDS 라운드, 세션 $total, 스냅샷: $LEAK_DIR) =="
+    # 비교표를 그대로 보여 준다. 기준값은 점검기의 환경변수(MYC_LEAK_FD_EXTRA, MYC_LEAK_RSS_LIMIT_KB)로 바꾼다
+    "$LEAK_CHECK" compare "$LEAK_DIR"
+    # 종료 코드를 바로 저장한다
+    leak_rc=$?
+fi
+
 # 마지막: 실패가 하나라도 있었으면 종료 코드 1, 아니면 0 이다. 이 값을 다른 스크립트나 CI 가 읽는다.
 # (exit 가 실행된 뒤에도 EXIT 트랩이 마지막으로 cleanup 을 실행한다.)
 # "결과:" 줄은 test_runner 가 '끝까지 실행됨'의 표지로 쓴다. 문구를 바꾸면 test_runner 도 고쳐야 한다.
 if [[ $ANY_FAIL -eq 1 ]]; then
     echo "결과: FAILED"
     exit 1
+fi
+# 누수 비교가 실패(1)면 실패로, 판정 불가(2)면 시작하지 못한 것과 같은 2 로 끝낸다
+if [[ $leak_rc -eq 1 ]]; then
+    echo "결과: FAILED (누수 점검)"
+    exit 1
+fi
+if [[ $leak_rc -ne 0 ]]; then
+    # 2 와 그 밖의 값은 판정하지 못한 것으로 본다 (합격으로 치지 않는다)
+    echo "결과: 누수 판정 불가 (leak_check compare 종료 코드 $leak_rc)"
+    exit 2
 fi
 echo "결과: ALL PASSED"
 exit 0

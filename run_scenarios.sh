@@ -19,7 +19,12 @@
 #                                  cgroup_gone    : true 면 /sys/fs/cgroup/mycontainer-<세션 ID 끝 숫자> 가 없어야 한다 (false 는 검사 안 함)
 #                                  map_entry_gone : true 면 session_cgroups 맵에 그 세션의 cgroup_id 항목이 없어야 한다 (false 는 검사 안 함)
 #                                  알 수 없는 키, 잘못된 JSON, 타입 오류는 사전 점검에서 시작을 거부한다
-# 이름은 s 로 시작해야 한다. s00~s98 은 실제 시나리오, s99 는 더미 탐지기 검증용으로 예약해 둔다.
+#   scenarios/<이름>/rootfs        (선택) 쓸 rootfs 의 이름 한 단어. 지금은 dev 만 있다 (앞뒤 공백과 개행은 무시)
+#                                  dev    : MYC_ROOTFS=$MYC_DEV_ROOTFS_DIR (기본 /home/dev/practice/mycontainer/dev_rootfs) 를 넘긴다
+#                                  파일 없음 : MYC_ROOTFS 를 해제하고 넘긴다 (run_container.sh 의 기본 busybox rootfs)
+#                                  알 수 없는 이름, 절대 경로가 아니거나 없는 dev rootfs, 소유 uid 가 SUDO_UID(없으면 id -u)와 다른 dev rootfs 는 사전 점검에서 시작을 거부한다
+# 이름은 s 또는 n 으로 시작해야 한다. s 는 공격(탐지/차단 기대), n 은 정상 작업(오탐 측정).
+# s00~s98 은 실제 시나리오, s99 는 더미 탐지기 검증용으로 예약해 둔다.
 #
 # ===== 러너가 하는 일 (순서) =====
 #   1. 사전 점검(preflight): 이 도구를 믿고 돌릴 수 있는 환경인가
@@ -58,10 +63,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # 평소에는 진짜 src 를 쓰고, 테스트에서만 가짜 구현이 있는 폴더로 바꿔 끼운다.
 # 환경변수 지정법: 명령 앞에 변수=값 을 붙이면 그 명령에만 전달된다 (예: MYC_SRC_DIR=tools/mock ./run_scenarios.sh).
 SRC_DIR="${MYC_SRC_DIR:-$HERE/src}"        # 테스트에서만 가짜 구현으로 바꿔 끼운다 (tools/test_runner.sh)
-# 시나리오 폴더. 평소에는 저장소의 scenarios/ 이고 테스트에서만 MYC_SCEN_DIR 로 바꿔 끼운다 (tools/test_runner.sh). 이름이 s 로 시작하는 폴더만 시나리오로 읽는다.
+# 시나리오 폴더. 평소에는 저장소의 scenarios/ 이고 테스트에서만 MYC_SCEN_DIR 로 바꿔 끼운다 (tools/test_runner.sh). 이름은 s 또는 n 으로 시작해야 한다. s 는 공격(탐지/차단 기대), n 은 정상 작업(오탐 측정).
 SCEN_DIR="${MYC_SCEN_DIR:-$HERE/scenarios}"
 # 컨테이너 폴더(upperdir 이 있는 곳)의 부모. host.sh 스텝이 컨테이너가 쓴 파일을 찾을 때 쓴다. 테스트에서는 MYC_CONTAINERS_ROOT 로 바꾼다.
 CONTAINERS_ROOT="${MYC_CONTAINERS_ROOT:-/var/lib/mycontainer/containers}"
+# rootfs 파일이 dev 인 시나리오에 넘길 개발 rootfs 위치. 기본값은 tools/make_dev_rootfs.sh 의 DEFAULT_DIR 과 같다
+# sudo 는 환경변수를 지우므로 바꾸려면 sudo env MYC_DEV_ROOTFS_DIR=경로 ./run_scenarios.sh 형태로 넘긴다
+DEV_ROOTFS_DIR="${MYC_DEV_ROOTFS_DIR:-/home/dev/practice/mycontainer/dev_rootfs}"
 JUDGE="$HERE/tools/judge.sh"
 # 런타임 검사가 "읽기만" 하는 경로와 도구. 테스트에서만 바꿔 끼운다 (tools/test_runner.sh).
 # 러너는 이 경로를 확인만 하고 쓰지 않는다. 세션을 종료하는 경로(src/loader/kill.c 의 /sys/fs/cgroup)는 컴파일 시점에 고정이라 영향이 없다.
@@ -164,8 +172,10 @@ preflight() {
     # 실행할 시나리오의 runtime.json 을 미리 검증한다. 오타로 검사가 조용히 빠지는 것을 막으려는 것이다.
     # need_bpftool : map_entry_gone 을 쓰는 시나리오가 하나라도 있으면 1
     local d rt need_bpftool=0
-    # 메인의 실행 반복문과 같은 규칙(s*/ 폴더, --only 패턴)으로 실행 대상만 고른다
-    for d in "$SCEN_DIR"/s*/; do
+    # rf : rootfs 파일에서 읽은 이름. dev_users : rootfs 가 dev 인 시나리오 이름들 (하나라도 있으면 dev rootfs 를 검사한다)
+    local rf dev_users=()
+    # 메인의 실행 반복문과 같은 규칙([sn]*/ 폴더, --only 패턴)으로 실행 대상만 고른다
+    for d in "$SCEN_DIR"/[sn]*/; do
         # 폴더가 아니면 건너뛴다 (맞는 것이 없으면 패턴이 글자 그대로 남는다)
         [[ -d "$d" ]] || continue
         # 끝의 / 를 뗀 경로
@@ -173,6 +183,19 @@ preflight() {
         # --only 패턴과 맞지 않으면 실행하지 않을 시나리오이므로 건너뛴다
         # shellcheck disable=SC2053
         if [[ -n "$FILTER" && "$(basename "$d")" != $FILTER ]]; then continue; fi
+        # rootfs 파일이 있으면 이름을 읽어 확인한다 (runtime.json 검사보다 먼저 한다. 아래의 continue 에 건너뛰지 않게)
+        if [[ -f "$d/rootfs" ]]; then
+            # 앞뒤 공백과 개행을 자른 이름
+            rf="$(read_rootfs_name "$d/rootfs")"
+            # 아는 이름이면 dev 를 쓰는 시나리오로 기억하고, 아니면 시나리오 이름과 값을 적어 거부한다
+            if [[ "$rf" == dev ]]; then
+                # 아래에서 dev rootfs 를 한 번만 검사하려고 모은다
+                dev_users+=("$(basename "$d")")
+            else
+                # 무엇이 틀렸고 무엇을 쓸 수 있는지 알린다
+                errs+=("rootfs 파일의 이름을 알 수 없다: $(basename "$d") 의 rootfs = '$rf' (쓸 수 있는 이름: dev)")
+            fi
+        fi
         # runtime.json 이 있는 시나리오만 검증한다
         rt="$d/runtime.json"
         [[ -f "$rt" ]] || continue
@@ -195,6 +218,28 @@ preflight() {
     if [[ $need_bpftool -eq 1 ]] && ! command -v "$BPFTOOL" >/dev/null 2>&1; then
         errs+=("map_entry_gone 검사에 bpftool 이 필요하다: $BPFTOOL (sudo apt install bpftool 또는 linux-tools)")
     fi
+    # dev rootfs 를 쓰는 시나리오가 있을 때만 그 폴더를 검사한다 (없으면 이 검사를 하지 않는다)
+    if ((${#dev_users[@]} > 0)); then
+        # 컨테이너가 사용자 네임스페이스에서 uid 0 으로 매핑하는 호스트 uid (run_container.sh 와 mycontainer_run 의 SUDO_UID, 없으면 getuid)
+        local want_uid="${SUDO_UID:-$(id -u)}" got_uid
+        # 어느 시나리오 때문에 검사하는지 메시지에 붙인다
+        local who="rootfs=dev 시나리오: ${dev_users[*]}"
+        # 절대 경로가 아니면 거부한다. run_container.sh 는 src 로 이동한 뒤 절대 경로만 받으므로, 상대 경로는 여기서 통과해도 시나리오마다 실패한다
+        if [[ "$DEV_ROOTFS_DIR" != /* ]]; then
+            # 값과 이유를 적는다. 존재와 소유자 검사는 하지 않는다 (상대 경로는 러너 위치 기준이라 run_container.sh 가 볼 폴더와 다를 수 있다)
+            errs+=("MYC_DEV_ROOTFS_DIR 는 절대 경로여야 한다: '$DEV_ROOTFS_DIR' ($who)")
+        # 폴더가 없으면 만드는 방법과 함께 거부한다
+        elif [[ ! -d "$DEV_ROOTFS_DIR" ]]; then
+            errs+=("dev rootfs 가 없다: $DEV_ROOTFS_DIR ($who). 일반 사용자로(sudo 없이) tools/make_dev_rootfs.sh 를 실행해 만든다 (다른 위치는 MYC_DEV_ROOTFS_DIR)")
+        else
+            # 소유 uid. -L 은 링크면 가리키는 폴더를 본다 (overlay 의 lowerdir 로 쓰이는 것이 그 폴더이다)
+            got_uid="$(stat -L -c %u -- "$DEV_ROOTFS_DIR" 2>/dev/null)"
+            # 다르면 overlay copy-up 이 EOVERFLOW 로 실패해 컨테이너 안에서 파일을 쓸 수 없다. 이유와 고치는 방법과 함께 거부한다
+            if [[ "$got_uid" != "$want_uid" ]]; then
+                errs+=("dev rootfs 의 소유 uid 가 '$got_uid' 인데 컨테이너가 매핑하는 uid 는 $want_uid 이다: $DEV_ROOTFS_DIR ($who). 이대로면 컨테이너 안 파일 쓰기가 EOVERFLOW 로 실패한다. 일반 사용자로(sudo 없이) tools/make_dev_rootfs.sh 를 실행해 다시 만든다 (그 스크립트는 대상이 이미 있으면 멈추므로 MYC_DEV_ROOTFS_DIR 로 새 위치를 주고 러너에도 같은 값을 준다)")
+            fi
+        fi
+    fi
 
     # (( 수식 )) : 숫자 비교. ${#errs[@]} 는 배열 원소 개수이므로 "오류가 하나라도 모였으면" 이다.
     if ((${#errs[@]} > 0)); then
@@ -208,6 +253,19 @@ preflight() {
 # ---------------------------------------------------------------------------------------------
 # 도우미
 # ---------------------------------------------------------------------------------------------
+
+# 시나리오의 rootfs 파일에서 이름을 읽어 앞뒤 공백과 개행을 잘라 출력한다 (사전 점검과 run_one 이 같은 규칙을 쓰게 한다)
+read_rootfs_name() {
+    # $(<파일) 은 파일 내용이고 끝의 개행은 빠진다
+    local v
+    v="$(<"$1")"
+    # 앞쪽 공백류를 자른다: ${v%%[![:space:]]*} 는 첫 공백 아닌 글자 앞까지(앞쪽 공백), 그것을 앞에서 뗀다
+    v="${v#"${v%%[![:space:]]*}"}"
+    # 뒤쪽 공백류를 자른다: ${v##*[![:space:]]} 는 마지막 공백 아닌 글자 뒤(뒤쪽 공백), 그것을 뒤에서 뗀다
+    v="${v%"${v##*[![:space:]]}"}"
+    # 자른 이름을 출력한다 (가운데 공백은 남으므로 "d ev" 는 알 수 없는 이름이 된다)
+    printf '%s' "$v"
+}
 
 # 파일의 줄 수. 파일이 없으면 0.
 count_lines() {
@@ -413,6 +471,24 @@ run_one() {
     # $(cat 파일) : 파일 내용을 문자열로 읽어서 script 변수에 담는다. 이 문자열을 컨테이너 안에서 sh -c 로 실행한다.
     script="$(cat "$dir/run.sh")"
 
+    # 이 시나리오에만 줄 rootfs 환경. env 의 인자로 쓴다 (기본: MYC_ROOTFS 를 해제해 부른 셸의 값이 새어 들어가지 않게 한다)
+    local rootfs_env=(-u MYC_ROOTFS) rf=""
+    # rootfs 파일이 있으면 이름을 읽는다 (사전 점검과 같은 규칙)
+    [[ -f "$dir/rootfs" ]] && rf="$(read_rootfs_name "$dir/rootfs")"
+    # 이름에 따라 고른다
+    case "$rf" in
+        # 파일이 없으면 해제한 채로 둔다 (run_container.sh 의 기본 busybox rootfs)
+        "") ;;
+        # dev 이면 개발 rootfs 경로를 넘긴다
+        dev) rootfs_env=(MYC_ROOTFS="$DEV_ROOTFS_DIR") ;;
+        # 사전 점검이 거부했어야 하는 이름이다. 기본 rootfs 로 조용히 돌리지 않고 이 시나리오를 실패로 한다 (fail-closed)
+        *)
+            echo "[FAIL] $name"
+            echo "        rootfs 이름을 처리하지 못함: '$rf' (사전 점검을 지나친 값)"
+            return 1
+            ;;
+    esac
+
     # agent-run 실행. run_container.sh 는 ./mycontainer_run 을 상대 경로로 부르므로 src 로 이동해서 실행한다.
     # MYC_SESSIONS_ROOT 로 세션 로그가 러너 전용 폴더로 가게 한다.
     # timeout 은 시나리오가 멈춰 버리는 경우를 막는다.
@@ -422,11 +498,12 @@ run_one() {
     #   변수=값 명령         : 명령 앞에 변수=값 을 붙이면 그 명령에만 환경변수로 전달된다 (MYC_SESSIONS_ROOT).
     #   줄 끝의 \            : 명령이 다음 줄에 이어진다는 표시이다 (그래서 이 구문 중간에는 주석 줄을 넣을 수 없다).
     #   timeout 초 명령      : 정해진 시간이 넘으면 명령을 강제로 끝낸다.
+    #   env 인자 명령        : rootfs_env 에 따라 MYC_ROOTFS 를 해제(-u)하거나 정해서 run_container.sh 를 실행한다.
     #   --                  : 그 뒤는 옵션이 아니라 agent-run 에게 줄 명령이라는 구분 표시.
     #   /bin/sh -c "$script": 컨테이너 안에서 스크립트 문자열을 sh 로 실행한다.
     #   >"파일" 2>&1         : 표준 출력을 파일에 쓰고, 오류 출력(2번)도 같은 곳으로 보낸다. 화면에는 아무것도 안 나오고 파일에 모인다.
     ( cd "$SRC_DIR" && MYC_SESSIONS_ROOT="$SESS_ROOT" \
-        timeout "$AGENT_TIMEOUT_S" ./run_container.sh agent-run -- /bin/sh -c "$script" ) \
+        timeout "$AGENT_TIMEOUT_S" env "${rootfs_env[@]}" ./run_container.sh agent-run -- /bin/sh -c "$script" ) \
         >"$WORK/$name.agent.out" 2>&1
     # $? : 바로 앞 명령(위의 ( ... ) 전체)의 종료 코드를 rc 에 저장한다. 다른 명령을 실행하면 $? 가 바뀌므로 바로 저장해야 한다.
     rc=$?
@@ -667,8 +744,9 @@ echo "== 시나리오 실행 (세션 루트: $SESS_ROOT) =="
 total=0
 passed=0
 failed_names=()
-# for dir in "$SCEN_DIR"/s*/ : scenarios 아래에서 s 로 시작하는 폴더들을 하나씩 (패턴 s*/ 가 폴더 목록으로 펼쳐진다).
-for dir in "$SCEN_DIR"/s*/; do
+# for dir in "$SCEN_DIR"/[sn]*/ : scenarios 아래에서 s 또는 n 으로 시작하는 폴더들을 하나씩 (패턴 [sn]*/ 가 폴더 목록으로 펼쳐진다).
+# [sn] 은 s 나 n 한 글자이다. 펼친 목록은 이름순이라 n 시나리오가 s 시나리오보다 먼저 돈다.
+for dir in "$SCEN_DIR"/[sn]*/; do
     # continue : 이번 반복을 건너뛰고 다음으로 간다. 폴더가 아니면 (패턴과 맞는 것이 없을 때 등) 건너뛴다.
     [[ -d "$dir" ]] || continue
     # ${dir%/} : 변수 값의 끝에 있는 / 를 한 번 떼어낸다 (위 패턴이 붙인 마지막 /).

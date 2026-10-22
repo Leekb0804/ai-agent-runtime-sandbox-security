@@ -37,6 +37,12 @@ CGR="$(mktemp -d)"
 MAPCOUNT="$(mktemp)"
 # 가짜 로더가 받은 인자와 PID 를 적는 파일 (MOCK_LOADER_RECORD). 로더 옵션 묶음에서 쓴다
 LREC="$(mktemp)"
+# 가짜 agent-run 이 받은 MYC_ROOTFS 를 적는 파일 (MOCK_ENV_RECORD). rootfs 선택 묶음에서 쓴다
+ENVREC="$(mktemp)"
+# rootfs 선택 묶음의 가짜 dev rootfs 폴더 (이 테스트를 실행한 사용자 소유. 내용은 비어 있고 가짜 agent-run 은 들여다보지 않는다)
+FAKEDEV="$(mktemp -d)"
+# 테스트를 부른 셸의 값이 러너에 새어 들어가 결과가 흔들리지 않게 지운다 (필요한 케이스는 check 의 인자로 직접 준다)
+unset MYC_DEV_ROOTFS_DIR MYC_ROOTFS
 # check 가 러너에 넘길 추가 인자 (예: --only 패턴). 기본은 없음
 RUNNER_ARGS=()
 
@@ -91,7 +97,7 @@ failures=0
 OUT="$(mktemp)"
 # trap '명령' EXIT : 스크립트가 어떻게 끝나든 마지막에 그 명령을 실행한다. 여기서는 임시 파일을 지운다.
 # 마지막의 remove_scen_tmp 는 러너 작업 폴더를 모은 전용 폴더를 지운다 (안전장치는 함수 안에 있다)
-trap 'rm -f "$OUT" "$MAPCOUNT" "$LREC"; rm -rf "$SCEN" "$CONT" "$CGR"; remove_scen_tmp "$SCENTMP"' EXIT
+trap 'rm -f "$OUT" "$MAPCOUNT" "$LREC" "$ENVREC"; rm -rf "$SCEN" "$CONT" "$CGR" "$FAKEDEV"; remove_scen_tmp "$SCENTMP"' EXIT
 
 # 러너 출력(OUT 파일)에 "결과: FAILED" 줄이 있는지 확인한다. 있으면 참(0), 없으면 거짓(1)을 돌려준다.
 # 러너가 종료 코드 1 로 끝나는 exit 는 run_scenarios.sh 맨 끝 한 곳뿐이고 그 바로 앞에서 이 줄을 낸다.
@@ -320,6 +326,178 @@ make_rt_scn '{"map_entry_gone":"yes"}'
 check "rt9d runtime.json 의 타입 오류 (map_entry_gone 이 문자열) -> 시작 거부" 2 "${RT_ENV[@]}" MOCK_MODE=killed
 # 정리: 임시 시나리오를 지우고 추가 인자를 비운다 (아래 케이스들은 기존대로 전체 시나리오를 돈다)
 rm -rf "$SCEN/s_rt"
+RUNNER_ARGS=()
+echo
+
+echo "[시나리오별 rootfs (rootfs 파일)]"
+# 임시 시나리오 두 개를 만든다. s_rf_dev 는 rootfs 파일이 있고 s_rf_plain 은 없다. 둘 다 mock 이 s00 로그를 쓰므로 기대도 s00 것이다
+# 인자 $1 = s_rf_dev/rootfs 의 내용 (printf 형식이라 \n 을 쓸 수 있다)
+make_rf_scn() {
+    # 이전 케이스가 남긴 폴더를 지운다
+    rm -rf "$SCEN/s_rf_dev" "$SCEN/s_rf_plain"
+    # 두 폴더를 만든다
+    mkdir -p "$SCEN/s_rf_dev" "$SCEN/s_rf_plain"
+    # 두 시나리오 모두 같은 스크립트 (trigger 가 없어서 mock 이 s00 로그를 쓴다)
+    echo '/bin/ls' > "$SCEN/s_rf_dev/run.sh"
+    # 같은 스크립트
+    echo '/bin/ls' > "$SCEN/s_rf_plain/run.sh"
+    # 판정 기대는 s00 과 같다
+    cp "$ROOT/scenarios/s00_benign/expect.json" "$SCEN/s_rf_dev/expect.json"
+    # 같은 기대
+    cp "$ROOT/scenarios/s00_benign/expect.json" "$SCEN/s_rf_plain/expect.json"
+    # s_rf_dev 에만 rootfs 파일을 쓴다 (형식 문자열로 받으므로 % 를 쓰지 않는다)
+    # shellcheck disable=SC2059
+    printf "$1" > "$SCEN/s_rf_dev/rootfs"
+}
+# 기록 파일이 기대한 줄들과 정확히 같은지 확인한다 (줄 수와 순서까지). 인자: 설명, 기대 줄들
+expect_envrec() {
+    # 설명
+    local msg="$1" want
+    # 나머지 인자를 한 줄에 하나씩 이어 기대 내용을 만든다
+    shift
+    want="$(printf '%s\n' "$@")"
+    # 기록 파일 전체와 비교한다 ($(< ) 는 끝 개행이 빠지므로 printf 쪽도 $( ) 로 받아 같은 모양이다)
+    if [[ "$(<"$ENVREC")" == "$want" ]]; then
+        printf '  PASS  %s\n' "$msg"
+    else
+        # 기대와 실제를 함께 보여 준다
+        printf '  FAIL  %s\n        기대:\n' "$msg"
+        sed 's/^/          /' <<<"$want"
+        printf '        실제:\n'
+        sed 's/^/          /' "$ENVREC"
+        failures=$((failures + 1))
+    fi
+}
+# 기록 파일이 비어 있는지 확인한다 (가짜 agent-run 이 한 번도 불리지 않았다 = 시나리오를 하나도 돌리지 않았다)
+expect_envrec_empty() {
+    # 설명
+    local msg="$1"
+    # -s : 크기가 0 보다 크면 참. 비어 있어야 통과
+    if [[ ! -s "$ENVREC" ]]; then
+        printf '  PASS  %s\n' "$msg"
+    else
+        # 무엇이 돌았는지 보여 준다
+        printf '  FAIL  %s (가짜 agent-run 이 불렸음)\n' "$msg"
+        sed 's/^/        /' "$ENVREC"
+        failures=$((failures + 1))
+    fi
+}
+# 러너의 기본 dev rootfs 경로 (run_scenarios.sh 의 DEV_ROOTFS_DIR 기본값, tools/make_dev_rootfs.sh 의 DEFAULT_DIR 과 같다)
+DEFAULT_DEV="/home/dev/practice/mycontainer/dev_rootfs"
+# 이 테스트를 실행한 사용자의 uid 와, 그와 다른 uid (소유자 불일치를 chown 없이 만들 때 SUDO_UID 로 준다)
+MY_UID="$(id -u)"
+OTHER_UID=$((MY_UID + 1))
+# rf1: 기본 경로. 기본 위치가 이 기계에 있고 내 소유이면 그 경로가 넘어가야 하고, 아니면 사전 점검이 그 기본 경로를 적어 거부해야 한다
+make_rf_scn 'dev\n'
+RUNNER_ARGS=(--only s_rf_dev)
+: >"$ENVREC"
+if [[ -d "$DEFAULT_DEV" && "$(stat -L -c %u -- "$DEFAULT_DEV")" == "$MY_UID" ]]; then
+    # 기본 위치가 쓸 수 있는 상태이다
+    check "rf1 rootfs=dev 이고 MYC_DEV_ROOTFS_DIR 가 없으면 기본 경로로 통과" 0 MOCK_ENV_RECORD="$ENVREC"
+    expect_envrec "rf1 MYC_ROOTFS 로 기본 경로가 넘어감" "MYC_ROOTFS=$DEFAULT_DEV"
+else
+    # 기본 위치가 없거나 다른 사용자 소유이다. 거부 메시지에 기본 경로가 들어 있으면 기본 경로를 본 것이다
+    check "rf1 rootfs=dev 이고 MYC_DEV_ROOTFS_DIR 가 없으면 기본 경로를 검사 (이 기계에는 쓸 수 있는 기본 위치가 없어 거부)" 2 MOCK_ENV_RECORD="$ENVREC"
+    expect_text "rf1 거부 이유에 기본 경로가 있음" "$DEFAULT_DEV"
+fi
+# rf2: MYC_DEV_ROOTFS_DIR 로 바꾼 경로가 넘어간다
+: >"$ENVREC"
+check "rf2 MYC_DEV_ROOTFS_DIR 로 바꾼 경로로 통과" 0 MYC_DEV_ROOTFS_DIR="$FAKEDEV" MOCK_ENV_RECORD="$ENVREC"
+expect_envrec "rf2 MYC_ROOTFS 로 바꾼 경로가 넘어감" "MYC_ROOTFS=$FAKEDEV"
+# rf3: 두 시나리오를 한 번에 돈다. 부른 셸에 MYC_ROOTFS 가 있어도 rootfs 파일이 없는 시나리오에는 해제되어야 한다
+# 이름 순서대로 s_rf_dev, s_rf_plain 이 돈다
+RUNNER_ARGS=(--only 's_rf_*')
+: >"$ENVREC"
+check "rf3 dev 시나리오와 파일 없는 시나리오를 함께 돌림" 0 MYC_DEV_ROOTFS_DIR="$FAKEDEV" MYC_ROOTFS=/rf3/from/caller MOCK_ENV_RECORD="$ENVREC"
+expect_envrec "rf3 dev 에는 dev 경로, 파일이 없는 쪽에는 MYC_ROOTFS 해제 (부른 셸의 값이 새지 않음)" "MYC_ROOTFS=$FAKEDEV" "MYC_ROOTFS 해제됨"
+# rf4: 알 수 없는 이름은 시나리오를 하나도 돌리기 전에 거부한다 (s_rf_plain 도 돌지 않아야 한다)
+make_rf_scn 'busybox\n'
+: >"$ENVREC"
+check "rf4 알 수 없는 rootfs 이름 -> 시작 거부" 2 MYC_DEV_ROOTFS_DIR="$FAKEDEV" MOCK_ENV_RECORD="$ENVREC"
+expect_text "rf4 시나리오 이름과 값을 알림" "rootfs 파일의 이름을 알 수 없다: s_rf_dev 의 rootfs = 'busybox' (쓸 수 있는 이름: dev)"
+expect_envrec_empty "rf4 시나리오를 하나도 돌리지 않음"
+# rf5: 앞뒤 공백과 빈 줄은 잘라서 dev 로 읽는다
+make_rf_scn '  dev \n\n'
+RUNNER_ARGS=(--only s_rf_dev)
+: >"$ENVREC"
+check "rf5 rootfs 파일의 앞뒤 공백과 개행은 무시" 0 MYC_DEV_ROOTFS_DIR="$FAKEDEV" MOCK_ENV_RECORD="$ENVREC"
+expect_envrec "rf5 dev 경로가 넘어감" "MYC_ROOTFS=$FAKEDEV"
+# rf6: 소유 uid 가 컨테이너가 매핑하는 uid(SUDO_UID)와 다르면 거부한다. chown 없이 SUDO_UID 를 다르게 준다
+make_rf_scn 'dev\n'
+RUNNER_ARGS=(--only 's_rf_*')
+: >"$ENVREC"
+check "rf6 dev rootfs 의 소유 uid 가 SUDO_UID 와 다름 -> 시작 거부" 2 MYC_DEV_ROOTFS_DIR="$FAKEDEV" SUDO_UID="$OTHER_UID" MOCK_ENV_RECORD="$ENVREC"
+expect_text "rf6 두 uid 를 알림" "dev rootfs 의 소유 uid 가 '$MY_UID' 인데 컨테이너가 매핑하는 uid 는 $OTHER_UID 이다"
+expect_text "rf6 고치는 방법을 알림" "일반 사용자로(sudo 없이) tools/make_dev_rootfs.sh 를 실행해 다시 만든다"
+expect_envrec_empty "rf6 시나리오를 하나도 돌리지 않음"
+# rf7: dev rootfs 폴더가 없으면 거부한다 (만들지 않을 경로를 FAKEDEV 안에 정한다)
+: >"$ENVREC"
+check "rf7 dev rootfs 폴더가 없음 -> 시작 거부" 2 MYC_DEV_ROOTFS_DIR="$FAKEDEV/no_such" MOCK_ENV_RECORD="$ENVREC"
+expect_text "rf7 경로와 만드는 방법을 알림" "dev rootfs 가 없다: $FAKEDEV/no_such (rootfs=dev 시나리오: s_rf_dev). 일반 사용자로(sudo 없이) tools/make_dev_rootfs.sh 를 실행해 만든다"
+expect_envrec_empty "rf7 시나리오를 하나도 돌리지 않음"
+# rf8: dev 를 쓰는 시나리오가 실행 대상에 없으면 dev rootfs 를 검사하지 않는다 (폴더도 없고 uid 도 다르지만 통과해야 한다)
+RUNNER_ARGS=(--only s_rf_plain)
+: >"$ENVREC"
+check "rf8 dev 시나리오가 없으면 dev rootfs 를 검사하지 않음" 0 MYC_DEV_ROOTFS_DIR="$FAKEDEV/no_such" SUDO_UID="$OTHER_UID" MOCK_ENV_RECORD="$ENVREC"
+expect_envrec "rf8 파일 없는 시나리오만 돌고 MYC_ROOTFS 해제" "MYC_ROOTFS 해제됨"
+# rn: n 시리즈(정상 작업) 폴더도 시나리오로 읽는지 본다. 파일 없는 n 시나리오 하나를 만든다 (기대는 s00 것)
+mkdir -p "$SCEN/n_rf_plain"
+# mock 이 s00 로그를 쓰게 trigger 가 없는 스크립트를 쓴다
+echo '/bin/ls' > "$SCEN/n_rf_plain/run.sh"
+# 판정 기대는 s00 과 같다
+cp "$ROOT/scenarios/s00_benign/expect.json" "$SCEN/n_rf_plain/expect.json"
+# rn1: --only 없이 전체를 돈다. n_rf_plain 이 실행되고, 이름순이라 s 시나리오보다 먼저 돈다 (s00, s99, s_rf_dev, s_rf_plain 이 뒤따른다)
+RUNNER_ARGS=()
+: >"$ENVREC"
+check "rn1 n 으로 시작하는 폴더도 전체 실행에 들어감" 0 MYC_DEV_ROOTFS_DIR="$FAKEDEV" MOCK_ENV_RECORD="$ENVREC"
+expect_text "rn1 n 시나리오가 통과로 표시" "[PASS] n_rf_plain"
+expect_text "rn1 다섯 개 모두 통과 (n 하나와 s 넷)" "시나리오 5/5 통과"
+expect_envrec "rn1 실행 순서와 MYC_ROOTFS (n_rf_plain, s00, s99, s_rf_dev, s_rf_plain)" "MYC_ROOTFS 해제됨" "MYC_ROOTFS 해제됨" "MYC_ROOTFS 해제됨" "MYC_ROOTFS=$FAKEDEV" "MYC_ROOTFS 해제됨"
+# rn2: --only 로 n 시나리오 하나만 고른다
+RUNNER_ARGS=(--only n_rf_plain)
+: >"$ENVREC"
+check "rn2 --only 로 n 시나리오를 고름" 0 MOCK_ENV_RECORD="$ENVREC"
+expect_text "rn2 하나만 실행" "시나리오 1/1 통과"
+expect_envrec "rn2 n 시나리오 하나만 돎" "MYC_ROOTFS 해제됨"
+# rn3: 사전 점검도 n 시나리오를 본다. 알 수 없는 rootfs 이름을 가진 n 시나리오는 하나도 돌기 전에 거부되어야 한다
+mkdir -p "$SCEN/n_rf_bad"
+# 스크립트와 기대는 n_rf_plain 과 같다
+cp "$SCEN/n_rf_plain/run.sh" "$SCEN/n_rf_plain/expect.json" "$SCEN/n_rf_bad/"
+# 알 수 없는 이름을 적는다
+echo busybox > "$SCEN/n_rf_bad/rootfs"
+RUNNER_ARGS=(--only 'n_rf_*')
+: >"$ENVREC"
+check "rn3 사전 점검이 n 시나리오의 rootfs 도 검사 -> 시작 거부" 2 MOCK_ENV_RECORD="$ENVREC"
+expect_text "rn3 n 시나리오 이름과 값을 알림" "rootfs 파일의 이름을 알 수 없다: n_rf_bad 의 rootfs = 'busybox' (쓸 수 있는 이름: dev)"
+expect_envrec_empty "rn3 시나리오를 하나도 돌리지 않음"
+# 다음 케이스에 섞이지 않게 지운다
+rm -rf "$SCEN/n_rf_bad"
+# rn4: MYC_DEV_ROOTFS_DIR 가 상대 경로이면 dev 시나리오가 있을 때 거부한다.
+# 러너 위치 기준으로는 실제로 있고 내 소유인 폴더를 고른다 (절대 경로 검사가 없으면 통과해 버리는 값이라 검사가 빠지면 이 케이스가 잡는다)
+# FAKEDEV 의 상위 폴더로 이동하고, 폴더 이름만 상대 경로로 쓴다 (러너는 이 테스트의 현재 위치에서 실행된다)
+cd "$(dirname "$FAKEDEV")" || exit 2
+REL_DEV="$(basename "$FAKEDEV")"
+RUNNER_ARGS=(--only 's_rf_*')
+: >"$ENVREC"
+check "rn4 상대 경로 MYC_DEV_ROOTFS_DIR + dev 시나리오 -> 시작 거부" 2 MYC_DEV_ROOTFS_DIR="$REL_DEV" MOCK_ENV_RECORD="$ENVREC"
+expect_text "rn4 값과 이유를 알림" "MYC_DEV_ROOTFS_DIR 는 절대 경로여야 한다: '$REL_DEV' (rootfs=dev 시나리오: s_rf_dev)"
+expect_envrec_empty "rn4 시나리오를 하나도 돌리지 않음"
+# 상대 경로일 때는 존재와 소유자 검사를 건너뛰어야 한다 (그 메시지가 없어야 한다)
+if grep -qF -e "dev rootfs 가 없다" -e "dev rootfs 의 소유 uid" "$OUT"; then
+    # 건너뛰지 않았다
+    echo "  FAIL  rn4 존재/소유자 검사를 건너뜀 (그 메시지가 나왔음)"; sed 's/^/        /' "$OUT"; failures=$((failures + 1))
+else
+    # 건너뛰었다
+    echo "  PASS  rn4 존재/소유자 검사를 건너뜀"
+fi
+# rn5: 상대 경로여도 dev 시나리오가 없으면 이 검사를 하지 않는다
+RUNNER_ARGS=(--only s_rf_plain)
+: >"$ENVREC"
+check "rn5 상대 경로라도 dev 시나리오가 없으면 통과" 0 MYC_DEV_ROOTFS_DIR="$REL_DEV" MOCK_ENV_RECORD="$ENVREC"
+# 원래 위치로 돌아온다 (cd - 는 바로 전 위치로 간다. 이동 표시는 버린다)
+cd - >/dev/null || exit 2
+# 정리: 임시 시나리오를 지우고 추가 인자를 비운다
+rm -rf "$SCEN/s_rf_dev" "$SCEN/s_rf_plain" "$SCEN/n_rf_plain"
 RUNNER_ARGS=()
 echo
 

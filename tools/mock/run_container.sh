@@ -19,6 +19,8 @@
 #   MOCK_CGROUP_ID=N   : "세션 시작" 줄의 cgroup_id 값 (기본 1). 숫자가 아닌 값으로 "못 뽑는" 경우를 만든다
 #   MOCK_META=missing  : killed 에서 meta.json 에 exit_code 를 쓰지 않는다.  MOCK_META=wrong : exit_code 를 0 으로 쓴다
 #   MOCK_CG_LEFT=1     : MYC_CHECK_CGROUP_ROOT 아래에 mycontainer-<세션 번호> 디렉토리를 남긴다 (rmdir 실패를 흉내냄)
+# rootfs 선택 시험용 환경변수:
+#   MOCK_ENV_RECORD=<파일> : 불릴 때마다 받은 MYC_ROOTFS 를 그 파일에 한 줄 덧붙인다 ("MYC_ROOTFS=<값>", 해제돼 있으면 "MYC_ROOTFS 해제됨")
 
 # 이 스크립트가 있는 폴더 기준으로 ../fixtures 로 이동해 절대 경로를 얻는다 (run_scenarios.sh 의 HERE 와 같은 관용구).
 FIX="$(cd "$(dirname "$0")/../fixtures" && pwd)"
@@ -32,6 +34,17 @@ script="${*: -1}"                       # 마지막 인자가 스크립트
 # date +%s%N : 현재 시각을 에폭 초와 나노초로 나타낸 숫자. 세션 ID 가 서로 겹치지 않게 한다.
 sid="mock-$(date +%s%N)"
 
+# MOCK_ENV_RECORD 가 있으면 러너가 넘긴 MYC_ROOTFS 를 기록한다 (러너가 시나리오마다 rootfs 를 고르는지 테스트가 확인한다)
+if [[ -n "${MOCK_ENV_RECORD:-}" ]]; then
+    # -v 이름 : 그 변수가 정해져 있으면 참이다 (빈 값도 정해진 것으로 본다. 해제와 빈 값을 구분하려는 것이다)
+    if [[ -v MYC_ROOTFS ]]; then
+        # 받은 값을 그대로 적는다
+        echo "MYC_ROOTFS=$MYC_ROOTFS" >>"$MOCK_ENV_RECORD"
+    else
+        # 해제된 채로 불렸다
+        echo "MYC_ROOTFS 해제됨" >>"$MOCK_ENV_RECORD"
+    fi
+fi
 # 진짜 agent-run 과 같은 형식의 한 줄을 출력한다. 러너가 sed 로 세션 ID 를 뽑는 바로 그 줄이다.
 # cgroup_id 는 MOCK_CGROUP_ID 로 바꿀 수 있다 (기본 1)
 echo "[*] 세션 시작: $sid (cgroup_id=${MOCK_CGROUP_ID:-1})"

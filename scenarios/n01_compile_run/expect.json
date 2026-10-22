@@ -1,0 +1,25 @@
+{
+  "description": "정상 작업: 같은 세션에서 gcc 로 컴파일하고 방금 만든 파일을 실행한다. write_exec_boundary 의 SUSPECT 는 하나 나오고 BLOCK 과 종료 대응은 없어야 한다. 기대 개수는 VM 에서 같은 작업을 손으로 한 번 실측한 값 기준이다 (반복 안정성 미확인).",
+  "expect": [
+    {
+      "note": "양성 검사 (탐지기와 무관): 커널이 gcc 의 실행을 관측했다. 이 검사가 없으면 빈 로그도 통과한다",
+      "match": { "type": "event", "kind": "EXEC", "filename": "/usr/bin/gcc" },
+      "min": 1
+    },
+    {
+      "note": "정상 작업은 차단되지 않는다. 한 번 실측한 값 기준, 값이 바뀌면 원인을 본다",
+      "match": { "type": "verdict", "level": "BLOCK" },
+      "count": 0
+    },
+    {
+      "note": "write_exec_boundary 가 같은 세션 실행(./hello)을 SUSPECT 로 한 번 기록. 러너가 dummy_suspect 도 켜므로 detector 로 거른다. 한 번 실측한 값 기준, 값이 바뀌면 원인을 본다",
+      "match": { "type": "verdict", "level": "SUSPECT", "detector": "write_exec_boundary" },
+      "count": 1
+    },
+    {
+      "note": "차단이 없으므로 종료 대응 기록도 없다 (s00 과 같은 방식). 한 번 실측한 값 기준, 값이 바뀌면 원인을 본다",
+      "match": { "type": "action" },
+      "count": 0
+    }
+  ]
+}

@@ -8,12 +8,13 @@
 #
 # 사용법:
 #   tools/make_dev_rootfs.sh --dry-run   실제로는 아무것도 하지 않고 읽은 값과 실행할 명령만 출력한다 (sudo 불필요)
-#   tools/make_dev_rootfs.sh             rootfs 를 만든다. 내부에서 sudo 를 부르므로 일반 사용자로 실행한다
+#   tools/make_dev_rootfs.sh             rootfs 를 만든다. 내부에서 sudo 를 부르므로 일반 사용자로 실행한다 (root 로 실행하면 --dry-run 까지 거부한다)
 #
 # 환경변수:
 #   MYC_DEV_ROOTFS_DIR  만들 위치 (기본 /home/dev/practice/mycontainer/dev_rootfs). 이미 있으면 지우지 않고 오류로 끝난다
 #   MYC_MIRROR          패키지 미러 (기본은 호스트 apt 설정 /etc/apt/sources.list.d/ubuntu.sources 의 URIs 값)
 # 릴리스 이름과 아키텍처는 호스트에서 읽는다 (/etc/os-release, dpkg --print-architecture).
+# 만든 뒤 호출한 사용자 소유로 바꾼다. 컨테이너가 uid 0 하나만 호스트 사용자 uid 로 매핑하기 때문이다.
 
 # -e: 명령이 실패하면 멈춘다, -u: 정해지지 않은 변수를 쓰면 멈춘다, -o pipefail: 파이프 중간 명령의 실패도 실패로 본다
 set -euo pipefail
@@ -56,10 +57,24 @@ for arg in "$@"; do
     esac
 done
 
+# root 로 실행하면 거부한다 (--dry-run 포함). id -u 가 0 이면 아래 chown 이 아무것도 바꾸지 않고 소유자 점검도 0 을 기대해 통과해 버리는데,
+# 컨테이너는 SUDO_UID(호출한 일반 사용자)로 uid 를 매핑하므로 root 소유 rootfs 에서는 파일 쓰기가 EOVERFLOW 로 실패한다.
+# --dry-run 도 거부하는 이유: "소유자 변경 예정" 줄이 잘못된 값(0:0)으로 출력되기 때문이다
+if [[ "$(id -u)" -eq 0 ]]; then
+    # 이유와 바른 실행 방법을 알린다
+    echo "[make_dev_rootfs] root 로 실행할 수 없다. sudo 없이 일반 사용자로 실행하라 (컨테이너가 매핑하는 호스트 사용자 소유로 rootfs 를 만들기 때문. 스크립트가 필요한 곳에서 스스로 sudo 를 부른다)" >&2
+    # 인자 오류와 같은 종료 코드로 끝낸다
+    exit 2
+fi
+
 # 호스트 릴리스 이름 (예: resolute). /etc/os-release 의 VERSION_CODENAME 줄에서 값만 꺼내고 따옴표를 지운다
 CODENAME="$(sed -n 's/^VERSION_CODENAME=//p' /etc/os-release | tr -d '"')"
 # 호스트 아키텍처 (예: arm64)
 ARCH="$(dpkg --print-architecture)"
+# 만든 rootfs 를 넘겨줄 소유자: 이 스크립트를 호출한 사용자 (sudo 를 붙이지 않고 실행하므로 일반 사용자의 uid, gid 이다)
+OWNER_UID="$(id -u)"
+# 호출한 사용자의 기본 그룹 gid
+OWNER_GID="$(id -g)"
 # 둘 중 하나라도 비었으면 debootstrap 에 넘길 수 없으므로 멈춘다
 if [[ -z "$CODENAME" || -z "$ARCH" ]]; then
     # 무엇을 못 읽었는지 알린다
@@ -81,6 +96,8 @@ echo "[make_dev_rootfs] 미러: $MIRROR"
 echo "[make_dev_rootfs] 대상: $DIR"
 # 실행할 명령. printf '%q ' 는 각 인자를 셸에 그대로 붙여 넣을 수 있는 형태로 출력한다
 echo "[make_dev_rootfs] 명령: $(printf '%q ' "${CMD[@]}")"
+# debootstrap 뒤에 바꿀 소유자 (uid:gid)
+echo "[make_dev_rootfs] 소유자 변경 예정: $OWNER_UID:$OWNER_GID"
 
 # --dry-run 이면 여기서 끝낸다. 참고로 대상과 debootstrap 상태만 알려 준다 (실패로 보지 않는다)
 if [[ $DRY_RUN -eq 1 ]]; then
@@ -136,6 +153,23 @@ if ! (cd /tmp && "${CMD[@]}"); then
     exit 1
 fi
 
+# rootfs 전체의 소유자를 호출한 사용자로 바꾼다. debootstrap 은 호스트 root 소유로 만드는데,
+# 컨테이너는 사용자 네임스페이스에 uid 0 하나만 호스트 사용자 uid 로 매핑하므로 root 소유 파일은 안에서 매핑되지 않는 소유자로 보인다.
+# 그러면 overlay 가 아래층 디렉터리를 위층으로 복사(copy-up)하려다 EOVERFLOW ("Value too large for defined data type") 로 실패해
+# /tmp 에 파일조차 만들 수 없다 (VM 에서 확인. 손으로 chown 한 뒤 gcc 컴파일과 실행이 되었다).
+# -h : 심볼릭 링크는 가리키는 대상이 아니라 링크 자체의 소유자를 바꾼다 (rootfs 안의 /etc/localtime 같은 절대 경로 링크가 호스트 파일을 가리키므로)
+# -P : 재귀 중에 심볼릭 링크를 따라 들어가지 않는다 (같은 이유. 호스트 파일의 소유자를 바꾸지 않게 한다)
+echo "[make_dev_rootfs] 소유자 변경: $OWNER_UID:$OWNER_GID"
+# 실패하면 set -e 로 바로 끝나지 않게 if ! 안에서 실행하고 안내 후 끝낸다
+if ! sudo chown -R -h -P "$OWNER_UID:$OWNER_GID" "$DIR"; then
+    # 실패를 알린다
+    echo "[make_dev_rootfs] 소유자 변경 실패: $DIR" >&2
+    # 이 상태로는 컨테이너 안에서 파일 쓰기가 EOVERFLOW 로 실패한다는 것을 알린다
+    echo "[make_dev_rootfs] root 소유로 남은 rootfs 는 컨테이너 안에서 파일 쓰기가 실패한다. 직접 바꾸려면: sudo chown -R -h -P $OWNER_UID:$OWNER_GID $(printf '%q' "$DIR")" >&2
+    # 오류로 끝낸다 (대상 폴더는 지우지 않는다)
+    exit 1
+fi
+
 # ---------------- 자체 점검 (실패해도 계속 진행하고 마지막에 요약) ----------------
 # 실패한 점검 이름을 모은다
 FAILS=()
@@ -173,6 +207,25 @@ if [[ -c "$DIR/dev/null" ]]; then
 else
     # 없거나 문자 장치가 아니면 실패. 컨테이너 시작(4.7단계)이 실패하게 된다
     report "dev_null" 1 "($DIR/dev/null 이 없거나 문자 장치가 아님. 컨테이너 4.7단계가 실패한다)"
+fi
+
+# (a2) 소유자 uid 가 호출한 사용자인가. 아니면 컨테이너 안에서 overlay copy-up 이 EOVERFLOW 로 실패해 파일을 쓸 수 없다
+# 볼 곳: rootfs 최상위, gcc (링크 자체), /tmp. stat -c %u 는 링크를 따라가지 않고 그 항목 자체의 소유 uid 를 낸다
+owner_bad=""
+# 세 곳을 하나씩 본다
+for p in "$DIR" "$DIR/usr/bin/gcc" "$DIR/tmp"; do
+    # 소유 uid (읽지 못하면 "없음")
+    u="$(stat -c '%u' "$p" 2>/dev/null || echo "없음")"
+    # 호출한 사용자의 uid 와 다르면 기록해 둔다
+    [[ "$u" == "$OWNER_UID" ]] || owner_bad+="$p=$u "
+done
+# 다른 곳이 하나도 없으면 통과
+if [[ -z "$owner_bad" ]]; then
+    # 기대한 uid 를 함께 보여 준다
+    report "owner_uid" 0 "(세 곳 모두 uid $OWNER_UID)"
+else
+    # 어디가 어떤 uid 인지와 그 결과를 알린다
+    report "owner_uid" 1 "(기대 uid $OWNER_UID, 다름: ${owner_bad}. 이대로면 컨테이너 안에서 파일 쓰기가 EOVERFLOW 로 실패한다)"
 fi
 
 # (b) 도구가 있는가. chroot 안에서 command -v 로 경로를, --version 의 첫 줄로 버전을 본다

@@ -207,3 +207,7 @@
 - **러너가 run_container.sh 의 출력 형식과 이름 규칙에 의존함** (`run_scenarios.sh`)
   - 이유: 러너는 agent-run 출력의 "[*] 세션 시작: <ID> (cgroup_id=...)" 줄에서 세션 ID 를 뽑고, host.sh 스텝은 컨테이너 폴더가 "mycontainer-<세션 ID 의 끝 숫자>" 라는 이름 규칙으로 upperdir 를 찾는다. 이 두 가정은 여러 세션에서 관찰로 확인했을 뿐 run_container.sh 코드로 확인하지 않았다. 형식이나 규칙이 바뀌면 세션 ID 를 얻지 못하거나 컨테이너 폴더를 찾지 못해 FAIL 로 끝난다 (fail-closed, w2d3).
   - 반영: 출력 형식이 바뀌면 러너와 tools/mock 을 같이 고친다. 장기적으로는 agent-run 이 세션 ID 와 컨테이너 폴더를 명시적으로 출력하게 하는 것을 검토 (3주차 이후, 선택)
+- **사람이 의도한 호스트 실행과 자동 실행을 구분하지 못함** (`write_exec_boundary`)
+  - 이유: write_exec_boundary 는 실행한 쪽의 cgroup 이 쓴 세션과 다르다는 것만 본다. 개발자가 에이전트가 빌드한 결과물을 호스트 셸에서 직접 실행하는 정상 흐름도, 호스트의 자동화(크론, CI, IDE 확장 등)가 에이전트의 파일을 실행하는 경우와 같은 BLOCK 이 된다. scenarios/n06_host_runs_output 이 이 동작을 기대값으로 고정한다 (write_exec_boundary BLOCK 1, kill/already_gone 1, 컨테이너 안 SUSPECT 0). VM 에서 러너로 다섯 번 돌려 모두 같았고, 반복 안정성을 확정한 것은 아니다.
+  - 비고: 사후 차단이라 호스트의 실행 자체는 멈추지 않는다. 세션은 호스트 실행 전에 이미 끝나 있어 종료 시도는 already_gone 으로 기록된다. 완화 방향은 아직 정하지 않았다 (실행한 쪽의 맥락 확인, 검토가 끝난 산출물의 해시 허용 목록, 세션 밖 실행을 BLOCK 이 아닌 경고 수준으로 낮추기 등). 설계 메모(design-memo-w2) 8절의 "BLOCK 대응 대상" 열린 질문과 연결된다.
+  - 반영: README 한계 섹션(w5). 완화 여부는 v0.2 이후에 다시 본다.

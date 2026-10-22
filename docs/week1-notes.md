@@ -69,11 +69,12 @@
   - 이유: `bpf_ktime_get_ns()`는 CLOCK_MONOTONIC 기준이라, 세션 시작/종료 시각과 바로 비교할 수 없다.
   - 시점: w5
   - 해결: (미해결)
-- [ ] **더미 탐지기(dummy_block, dummy_suspect)가 운영 로더에서 같이 돎**
+- [x] **더미 탐지기(dummy_block, dummy_suspect)가 운영 로더에서 같이 돎**
   - 이유: dummy_suspect 는 모든 EXEC 를 SUSPECT 로 판정해 오탐 측정에 노이즈가 되고, dummy_block 은 /tmp/trigger 를 exec 하면 실제 kill 을 일으킨다.
   - 비고: 로더에 탐지기 선택 옵션을 둔다 (기본은 write_exec_boundary 만, 더미는 러너가 켠다). 관찰 모드(--no-kill) 결정과 같은 로더 옵션 설계이므로 함께 정한다. argv[1](세션 루트) 호환 유지.
   - 시점: w3
-  - 해결: (미해결)
+  - 해결: "w3d2: 로더에 --detectors 옵션을 추가하고 러너가 필요한 탐지기를 명시해 켠다"
+  - 확인: 기본 로더는 write_exec_boundary 만 켜고 더미는 --detectors 로 명시해야 켜진다. 러너는 더미를 명시해 켜고 시나리오 5/5 통과
 
 ### 세션 대응과 kill switch
 
@@ -82,11 +83,12 @@
   - 비고: 새 필드 없이 세션 ID 끝 숫자로 `/sys/fs/cgroup/mycontainer-<숫자>` 를 만들고, 디렉토리를 fd 로 열어 inode 가 cgroup_id 와 같을 때만 `cgroup.kill` 에 쓴다 (`kill_cgroup.c`).
   - 시점: w3
   - 해결: "w3d2: BLOCK 이면 세션 cgroup 을 cgroup.kill 로 종료하고 결과를 기록 (sent/already_gone/failed/skipped)"
-- [ ] **BLOCK이면 무조건 종료할지, 평가용 관찰 모드를 둘지 정하지 않음**
+- [x] **BLOCK이면 무조건 종료할지, 평가용 관찰 모드를 둘지 정하지 않음**
   - 이유: 오탐 평가 중에는 종료 없이 BLOCK 판정만 모아야 할 때가 있다.
   - 비고: 평가용으로만 쓰고 README 에 명시. 기본값이 되면 이 도구의 의미가 사라짐.
   - 시점: w3
-  - 해결: (미해결)
+  - 해결: "w3d2: 로더 관찰 모드(--no-kill) 추가, BLOCK 시 종료 대신 would_kill 기록"
+  - 확인: 기본은 종료, --no-kill 이면 would_kill 만 기록. 단위 테스트(test_kill_session, test_verdict_handler)와 mock, VM 에서 실제 로더와 컨테이너로 수동 확인 (rc=0, would_kill 세션당 한 줄)
 - [ ] **cgroup id가 재사용되는지 확인하지 않음** (`session_log.c`)
   - 이유: 재사용되면 캐시한 cgroup id → 세션 대응이 끝난 세션을 가리킬 수 있다.
   - 비고: 재사용 여부를 확인한 결과를 이 줄에 기록.

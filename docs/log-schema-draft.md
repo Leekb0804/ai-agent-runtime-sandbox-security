@@ -51,13 +51,14 @@ event 의 필드에 더해 다음이 있다. `event` 객체는 판정의 원인�
 
 판정에 따른 대응 기록. BLOCK 이면 세션 cgroup 의 종료를 시도하고 그 결과를 한 줄 남긴다 (w3d2 부터. 그 전에는 스텁의 `would_kill`).
 종료는 세션 ID 끝의 숫자로 `/sys/fs/cgroup/mycontainer-<숫자>` 를 찾고, 디렉토리 inode 가 `cgroup_id` 와 같을 때만 `cgroup.kill` 에 `1` 을 쓴다.
+로더를 평가용 관찰 모드(`--no-kill`)로 띄우면 종료하지 않고 `action=would_kill`, `result=not_sent`, `detail=observe_mode`, `errno=0` 한 줄만 남긴다. 세션을 찾지 못한 경우(`_unattributed`)는 관찰 모드에서도 `kill` / `skipped` 그대로다.
 
 | 필드 | 설명 |
 | --- | --- |
 | `cgroup_id` | 대상 세션의 cgroup |
-| `action` | `kill` (`would_kill` 은 나중의 평가용 관찰 모드에 쓰려고 비워 둔다) |
+| `action` | `kill` (종료를 시도함) / `would_kill` (관찰 모드. 종료했을 것이라는 기록만) |
 | `result` | 종료 시도의 결과 (아래 표) |
-| `detail` | 어느 단계에서 끝났는지: `written`, `enoent`, `inode_mismatch`, `bad_session_id`, `open_root`, `open_dir`, `fstat`, `open_kill`, `write`, `unattributed` |
+| `detail` | 어느 단계에서 끝났는지: `written`, `enoent`, `inode_mismatch`, `bad_session_id`, `open_root`, `open_dir`, `fstat`, `open_kill`, `write`, `unattributed`, `observe_mode` (관찰 모드) |
 | `errno` | 실패한 호출의 errno. 없으면 0 |
 | `reason` | 대응을 일으킨 판정의 reason |
 
@@ -67,6 +68,7 @@ event 의 필드에 더해 다음이 있다. `event` 객체는 판정의 원인�
 | `already_gone` | 대상이 없다. 디렉토리가 없거나(`enoent`) 같은 이름의 다른 cgroup 이다(`inode_mismatch`, 아무것도 쓰지 않음) | 다시 시도하지 않음 |
 | `failed` | 그 밖의 실패 (잘못된 세션 ID, 권한, 쓰기 오류 등). `errno` 를 남긴다 | 다시 시도함 |
 | `skipped` | 세션을 찾지 못해(`_unattributed`) 대상 cgroup 을 알 수 없어 시도하지 않았다 | 다시 시도하지 않음 |
+| `not_sent` | 관찰 모드라 `cgroup.kill` 에 쓰지 않았다 (`action=would_kill`). `session_cgroups` 맵에서도 지우지 않는다 | 다시 시도하지 않음 |
 
 한 세션에서 BLOCK 이 여러 번 나와도 `action` 은 한 번만 기록된다 (`failed` 일 때만 다음 BLOCK 에서 다시 시도해 한 줄이 더 남는다).
 

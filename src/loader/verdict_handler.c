@@ -53,11 +53,13 @@ void handle_verdict(const struct event_hdr *h, size_t len,
      *    플래그를 kill_session 호출 "전에" 세운다: 호출 중에 또 BLOCK 이 들어와도 중복 호출을 막기 위해서.
      *
      *    결과에 따른 플래그:
-     *      failed                       : 되돌린다 (0). 다음 BLOCK 때 다시 시도한다
-     *      sent / already_gone / skipped : 유지한다 (1). 다시 시도해도 결과가 같거나 이미 끝났다
+     *      failed                                  : 되돌린다 (0). 다음 BLOCK 때 다시 시도한다
+     *      sent / already_gone / skipped / observed : 유지한다 (1). 다시 시도해도 결과가 같거나 이미 끝났다
+     *      (observed 는 관찰 모드(--no-kill)의 결과다. 그래서 would_kill 은 세션당 첫 BLOCK 한 번만 남는다)
      *
      *    플래그는 이 세션의 칸(s)에 저장되어 있다. 칸이 밀려나 사라지면 플래그도 사라져서 kill_session 이
      *    한 번 더 불릴 수 있다. 그때는 cgroup 이 이미 없어서 already_gone 이 되므로 해가 없다.
+     *    (이것은 kill 모드에서만 맞다. 관찰 모드에서는 cgroup 이 살아 있어 would_kill 이 한 줄 더 남을 수 있다)
      *    SUSPECT 는 여기서 아무 대응도 하지 않는다. 기록은 위에서 이미 끝났다.
      */
     if (v->level == V_BLOCK && !s->kill_requested) {

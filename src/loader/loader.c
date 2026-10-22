@@ -28,7 +28,7 @@
  * 실행: sudo ./myc_loader [세션 루트 디렉토리] [--detectors=이름,이름,...] [--no-kill]
  *       세션 루트를 생략하면 /var/lib/mycontainer/sessions. 옵션과 세션 루트의 순서는 상관없다.
  *       --detectors 를 생략하면 시험용(test_only)이 아닌 탐지기만 켠다. 더미 탐지기는 이름으로 명시해야 켜진다
- *       (예: 러너는 --detectors=dummy_block,dummy_suspect,write_exec_boundary).
+ *       (예: 러너는 --detectors=write_exec_boundary,dummy_block,dummy_suspect. ready 줄에는 알파벳순으로 나온다).
  *       --no-kill 은 관찰 모드(평가용)이다. BLOCK 이어도 세션을 종료하지 않고 action="would_kill" 만 기록한다 (kill.h).
  *       러너는 이 옵션을 쓰지 않는다.
  *       잘못된 인자(모르는 옵션, 모르는 탐지기 이름 등)는 BPF 를 올리기 전에 거부하고 종료 코드 2 로 끝난다.

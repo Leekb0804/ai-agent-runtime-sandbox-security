@@ -128,6 +128,11 @@
   - 이유: 실패하면 session_cgroups 에 항목이 남지만 기록으로는 알 수 없다.
   - 시점: w5
   - 해결: (미해결)
+- [ ] **러너의 시간 초과(60초) 경로가 에이전트를 종료하지 못하고 격리 자원을 정리하지 않음**
+  - 이유: AGENT_TIMEOUT_S(60초, 상수) 로 timeout 이 run_container.sh 를 끊으면, run_container.sh 에 trap 이 없고 mycontainer_run 에 신호 처리기가 없어 정리 코드가 돌지 않는다(src/run_container.sh:143-186, src/mycontainer_run.c:566-573). 그 결과 세션 cgroup, netns, 호스트 veth, nsfs 마운트, 감시 맵 항목, state 파일이 남고 meta.json 에 exit_code 가 기록되지 않는다. VM 실측(w3d2): 컨테이너 안에서 sleep 600 을 실행하고 timeout 15 로 끊었을 때 종료 코드 124, 위 자원이 모두 남았고 점검기 compare 가 cgroup_dirs, netns, veth, mounts, procs, map_entries, state_files 일곱 행을 FAIL 로 잡았다. 에이전트 프로세스도 살아남았다: sleep 이 컨테이너 PID 1 이라 timeout 이 보낸 TERM 을 무시했다(NSpid 끝 1, 부모 init). 제품의 agent-run 자체에는 시간 초과가 없고 이 timeout 은 러너가 붙인 안전장치이므로, 영향은 시나리오가 멈췄을 때 러너가 에이전트와 격리 자원을 치우지 못하는 것이다. 한 번의 실측이며 PID 1 이 sh 인 여러 명령 스크립트에서의 동작은 확인하지 못했다.
+  - 비고: 완화 후보는 run_container.sh 가 TERM 을 받으면 세션 cgroup 에 cgroup.kill 을 쓰고 기존 정리를 이어서 타게 하는 방식이다. 이 경로에서는 로더가 맵 항목을 지우지 않으므로 별도 처리가 필요하다. 누수 점검(tools/leak_check.sh)은 이 경로를 대표 시나리오에 넣지 않았다. 러너 B안 작업과 함께 수정할 예정이라 주차는 미정.
+  - 시점: w4
+  - 해결: (미해결)
 
 ### 세션 로그와 리포트
 

@@ -11,11 +11,15 @@
 #     sudo ./run_scenarios.sh --keep         # 성공해도 로그를 보관
 #     sudo ./run_scenarios.sh --repeat 100   # 한 로더 수명 안에서 N 라운드 반복하고 누수 점검 (tools/leak_check.sh)
 #     sudo ./run_scenarios.sh --repeat 6 --leak-interval 1   # 중간 스냅샷 간격 (기본 10 라운드, --repeat 와 함께만)
+#     (시나리오 폴더에 live.json 이 있으면 컨테이너가 살아 있는 동안 host.sh 를 실행한다. 아래 "시나리오 형식" 참고)
 #
 # ===== 시나리오 형식 =====
 #   scenarios/<이름>/run.sh        컨테이너 안에서 실행할 스크립트 (러너가 /bin/sh -c 로 넘김)
 #   scenarios/<이름>/expect.json   기대하는 세션 로그 (형식은 tools/judge.sh 의 설명 참고)
 #   scenarios/<이름>/host.sh       (선택) 컨테이너가 끝난 뒤 호스트에서 실행할 스크립트. 환경변수 MYC_UPPER 로 그 컨테이너의 upperdir 를 받는다
+#   scenarios/<이름>/live.json     (선택) {"ready":"tmp/myc_ready"}. 있으면 host.sh 를 컨테이너가 끝난 뒤가 아니라 살아 있는 동안 실행한다 (B안)
+#                                  러너가 agent-run 을 백그라운드로 띄우고, upper/<ready> 가 새로 생기면 host.sh 를 실행한 뒤 agent-run 이 끝나기를 기다린다
+#                                  ready 는 upper 기준 상대 경로 (절대 경로, .., 개행, NUL 은 거부). B안 시나리오는 host.sh 와 runtime.json 이 꼭 있어야 한다
 #   scenarios/<이름>/runtime.json  (선택) 로그 밖의 기대: {"exit_code":137,"cgroup_gone":true,"map_entry_gone":true} (세 키 모두 선택)
 #                                  exit_code      : agent-run 의 종료 코드. 세션 폴더 meta.json 의 exit_code 도 같아야 한다
 #                                  cgroup_gone    : true 면 /sys/fs/cgroup/mycontainer-<세션 ID 끝 숫자> 가 없어야 한다 (false 는 검사 안 함)
@@ -87,6 +91,17 @@ AGENT_TIMEOUT_S=60      # 시나리오 하나가 이 시간을 넘기면 중단�
 # 양의 정수(1~9999)가 아니면 사전 점검이 시작을 거부한다 (아래 대기 반복문이 이 값을 계산에 쓰기 때문이다)
 READY_TIMEOUT_S="${MYC_READY_TIMEOUT_S:-10}"
 RUNTIME_TRIES=20        # cgroup 소멸, 맵 항목 소멸을 확인하는 최대 횟수 (0.1초 간격, 최대 약 2초)
+# B안(live.json) 시나리오의 마감(초). 모두 AGENT_TIMEOUT_S 보다 훨씬 짧아야 한다 (60초 timeout 경로는 에이전트와 격리 자원을 남긴다)
+LIVE_READY_TIMEOUT_S=15   # agent-run 을 띄운 뒤 준비 표시(upper/<ready>)가 새로 생기기를 기다리는 최대 시간
+LIVE_EXIT_TIMEOUT_S=30    # host.sh 뒤에 agent-run 이 끝나기를 기다리는 최대 시간 (BLOCK 으로 세션이 종료되어야 한다)
+LIVE_HOST_TIMEOUT_S=10    # B안의 host.sh 하나가 쓸 수 있는 최대 시간
+LIVE_CLEANUP_WAIT_S=10    # 정리 때 cgroup.kill 을 쓴 뒤 agent-run 이 끝나기를 기다리는 최대 시간
+# B안 정리(live_cleanup)가 쓰는 상태. EXIT 트랩도 이 값을 보고 정리한다. 비어 있으면 정리할 것이 없다
+LIVE_PID=""               # 백그라운드 agent-run 의 pid
+LIVE_SID=""               # agent.out 에서 뽑은 세션 ID (cgroup 이름의 숫자를 얻는다)
+LIVE_CGID=""              # agent.out 에서 뽑은 cgroup_id (cgroup.kill 을 쓰기 전에 inode 와 비교한다)
+LIVE_RC=""                # B안에서 받은 agent-run 의 종료 코드
+LIVE_LEFT=""              # 정리 뒤에도 agent-run 이 남았으면 그 세션 cgroup 이름 (mycontainer-N, 모르면 "<모름>")
 # 러너 전용 로더에 켤 탐지기. 로더는 --detectors 가 없으면 더미(시험용)를 켜지 않는다.
 # s99, s03 은 dummy_block 의 BLOCK 에, s99 의 마지막 기대는 dummy_suspect 의 판정에 의존한다. 이 목록은 여기서만 정한다.
 # 일부러 알파벳순이 아닌 순서로 둔다. ready 줄은 로더가 정렬해서 내므로, 아래 want_dets 의 정렬이 빠지면 테스트(ld1)가 잡는다.
@@ -103,11 +118,11 @@ LEAK_INTERVAL=""
 LEAK_CHECK="${MYC_LEAK_CHECK:-$HERE/tools/leak_check.sh}"
 
 # 함수 정의 : 이름() { ... }. 부를 때는 이름만 쓴다 (usage). 함수 안의 $1 은 함수에 준 인자이다 (스크립트의 $1 과 별개).
-# sed -n '3,14p' "$0" : 이 파일 자신의 3~14번째 줄만 출력한다. 즉 --help 는 위쪽 주석의 사용법 부분을 그대로 보여 준다.
-#    그래서 파일 맨 위 14줄은 줄 수를 바꾸면 안 된다 (줄이 추가되면 --help 출력이 어긋난다).
+# sed -n '3,15p' "$0" : 이 파일 자신의 3~15번째 줄만 출력한다. 즉 --help 는 위쪽 주석의 사용법 부분을 그대로 보여 준다.
+#    그래서 파일 맨 위 15줄은 줄 수를 바꾸면 안 된다 (줄이 추가되면 --help 출력이 어긋난다).
 # 두 번째 sed 는 각 줄 앞의 "# " 를 지운다.
 usage() {
-    sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
 }
 
@@ -250,6 +265,8 @@ preflight() {
     local d rt need_bpftool=0
     # rf : rootfs 파일에서 읽은 이름. dev_users : rootfs 가 dev 인 시나리오 이름들 (하나라도 있으면 dev rootfs 를 검사한다)
     local rf dev_users=()
+    # any_live : live.json 시나리오가 하나라도 있으면 1 (마감 합을 검사한다)
+    local any_live=0
     # 메인의 실행 반복문과 같은 규칙([sn]*/ 폴더, --only 패턴)으로 실행 대상만 고른다
     for d in "$SCEN_DIR"/[sn]*/; do
         # 폴더가 아니면 건너뛴다 (맞는 것이 없으면 패턴이 글자 그대로 남는다)
@@ -271,6 +288,29 @@ preflight() {
                 errs+=("rootfs 파일의 이름을 알 수 없다: $(basename "$d") 의 rootfs = '$rf' (쓸 수 있는 이름: dev)")
             fi
         fi
+        # live.json 이 있으면 B안 시나리오이다. 형식과 짝 파일을 확인한다 (runtime.json 검사보다 먼저 한다. 아래의 continue 에 건너뛰지 않게)
+        if [[ -f "$d/live.json" ]]; then
+            # 마감 합 검사를 한 번만 하려고 표시한다
+            any_live=1
+            # 객체이고 키가 ready 하나뿐이며, 값은 비어 있지 않은 문자열이고 / 로 시작하지 않으며 .., 개행, NUL 을 포함하지 않아야 한다
+            if ! jq -e '
+                  type == "object"
+                  and (keys == ["ready"])
+                  and (.ready | type == "string")
+                  and (.ready | length > 0)
+                  and (.ready | startswith("/") | not)
+                  and (.ready | contains("..") | not)
+                  and (.ready | contains("\n") | not)
+                  and (.ready | contains("\u0000") | not)
+                ' "$d/live.json" >/dev/null 2>&1; then
+                # 무엇이 허용되는지 함께 알려 준다
+                errs+=("live.json 형식 오류: $d/live.json (허용: {\"ready\":\"<upper 기준 상대 경로>\"}, 절대 경로, .., 개행, NUL 은 안 됨)")
+            fi
+            # B안은 컨테이너가 살아 있는 동안 host.sh 를 실행하는 것이므로 host.sh 가 없으면 할 일이 없다
+            [[ -f "$d/host.sh" ]] || errs+=("live.json 이 있는데 host.sh 가 없다: $d")
+            # 살아 있는 세션이 종료되었는지는 exit_code 로 확인해야 하므로 runtime.json 이 꼭 있어야 한다
+            [[ -f "$d/runtime.json" ]] || errs+=("live.json 이 있는데 runtime.json 이 없다: $d (세션 종료를 exit_code 로 확인해야 한다)")
+        fi
         # runtime.json 이 있는 시나리오만 검증한다
         rt="$d/runtime.json"
         [[ -f "$rt" ]] || continue
@@ -289,6 +329,11 @@ preflight() {
         # map_entry_gone 이 true 이면 bpftool 이 필요하다
         if jq -e '.map_entry_gone == true' "$rt" >/dev/null 2>&1; then need_bpftool=1; fi
     done
+    # B안 시나리오가 있으면 두 마감의 합이 agent-run 의 timeout 보다 작아야 한다 (넘으면 60초 timeout 경로로 빠진다)
+    if [[ $any_live -eq 1 ]] && ((LIVE_READY_TIMEOUT_S + LIVE_EXIT_TIMEOUT_S >= AGENT_TIMEOUT_S)); then
+        # 세 값을 함께 알린다
+        errs+=("B안 마감의 합(${LIVE_READY_TIMEOUT_S}+${LIVE_EXIT_TIMEOUT_S}초)이 AGENT_TIMEOUT_S(${AGENT_TIMEOUT_S}초) 이상이다")
+    fi
     # 맵 검사가 필요한데 bpftool 이 없으면 검사를 건너뛰지 않고 시작을 거부한다 (SKIP 은 가짜 통과가 된다)
     if [[ $need_bpftool -eq 1 ]] && ! command -v "$BPFTOOL" >/dev/null 2>&1; then
         errs+=("map_entry_gone 검사에 bpftool 이 필요하다: $BPFTOOL (sudo apt install bpftool 또는 linux-tools)")
@@ -529,6 +574,194 @@ print_judge() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# B안(live.json) 정리. 백그라운드 agent-run 이 남아 있으면 세션 cgroup 에 cgroup.kill 을 써서 끝내고 기다린다.
+# 세션 cgroup 의 inode 가 agent.out 에서 뽑은 cgroup_id 와 같을 때만 쓴다 (이름이 같은 다른 cgroup 을 죽이지 않으려는 것이다).
+# 무엇을 했는지 한 줄씩 출력한다 (부르는 쪽의 FAIL 메시지 아래에 붙는다). B안 FAIL 경로와 EXIT 트랩이 부른다.
+# ---------------------------------------------------------------------------------------------
+live_cleanup() {
+    # cg 는 세션 cgroup 경로, ino 는 그 inode, waited 는 기다린 횟수(0.1초 단위)
+    local cg ino waited=0 lrc
+    # 정리할 agent-run 이 없으면 할 일이 없다
+    [[ -n "$LIVE_PID" ]] || return 0
+    # 세션 ID 와 cgroup_id 를 둘 다 알아야 대상 cgroup 을 확정할 수 있다
+    if [[ -n "$LIVE_SID" && "$LIVE_CGID" =~ ^[0-9]+$ ]]; then
+        # cgroup_gone 검사와 같은 경로 규칙 (세션 ID 끝 숫자 = run_container.sh 의 $$)
+        cg="$CHECK_CGROUP_ROOT/mycontainer-${LIVE_SID##*-}"
+        # 디렉터리가 있을 때만 쓴다 (없으면 이미 끝난 것이다)
+        if [[ -d "$cg" && ! -L "$cg" ]]; then
+            # 지금 그 이름의 cgroup inode (cgroup v2 에서는 inode 가 cgroup_id 이다)
+            ino="$(stat -c %i -- "$cg" 2>/dev/null)"
+            # 같은 cgroup 일 때만 cgroup.kill 에 1 을 쓴다
+            if [[ "$ino" == "$LIVE_CGID" ]]; then
+                # 쓰기 결과를 알린다 (실패해도 아래에서 기다리기는 한다)
+                if echo 1 >"$cg/cgroup.kill" 2>/dev/null; then
+                    echo "[정리] cgroup.kill 에 1 을 씀: $cg"
+                else
+                    echo "[정리] cgroup.kill 쓰기 실패: $cg"
+                fi
+            else
+                # 다른 cgroup 이므로 쓰지 않는다
+                echo "[정리] cgroup inode '$ino' 가 cgroup_id $LIVE_CGID 와 달라 cgroup.kill 을 쓰지 않음: $cg"
+            fi
+        else
+            # 이미 없으면 쓸 곳이 없다
+            echo "[정리] 세션 cgroup 이 없음: $cg"
+        fi
+    else
+        # 세션 시작 줄을 아직 못 봤다
+        echo "[정리] 세션 ID 나 cgroup_id 를 몰라 cgroup.kill 을 쓰지 않음"
+    fi
+    # agent-run 이 끝나기를 최대 LIVE_CLEANUP_WAIT_S 초 기다린다 (run_container.sh 의 정상 정리가 돌 시간)
+    while kill -0 "$LIVE_PID" 2>/dev/null && ((waited < LIVE_CLEANUP_WAIT_S * 10)); do
+        # 0.1초 쉬고 다시 본다
+        sleep 0.1
+        # 기다린 횟수를 센다
+        waited=$((waited + 1))
+    done
+    # 끝까지 살아 있으면 남았다고 알린다 (러너가 더 할 수 있는 일은 없다)
+    if kill -0 "$LIVE_PID" 2>/dev/null; then
+        echo "[정리] agent-run(pid $LIVE_PID) 이 ${LIVE_CLEANUP_WAIT_S}초 뒤에도 남아 있음. 세션 cgroup, netns, 맵 항목을 손으로 정리해야 한다"
+        # 부르는 쪽이 러너를 멈추도록 남은 세션 cgroup 이름을 남긴다 (세션 ID 를 모르면 이름도 모른다)
+        if [[ -n "$LIVE_SID" ]]; then LIVE_LEFT="mycontainer-${LIVE_SID##*-}"; else LIVE_LEFT="<모름>"; fi
+    else
+        # 끝났으면 종료 코드를 받아 알린다
+        wait "$LIVE_PID" 2>/dev/null
+        # wait 의 결과가 agent-run 의 종료 코드이다
+        lrc=$?
+        echo "[정리] agent-run 종료 (종료 코드 $lrc)"
+    fi
+    # 다시 정리하지 않도록 상태를 비운다
+    LIVE_PID=""
+    LIVE_SID=""
+    LIVE_CGID=""
+}
+
+# B안 FAIL 경로의 정리. 정리 결과를 들여써서 붙이고, 정리 뒤에도 agent-run 이 남았으면 러너 전체를 멈춘다 (종료 코드 2).
+# 남은 세션이 다음 시나리오와 누수 점검을 오염시키므로 다음 시나리오, 인프라 검증, 누수 비교를 하지 않는다. 로그 보관은 EXIT 트랩이 한다.
+#   $1 시나리오 이름 (정리 출력 파일 이름에 쓴다)
+live_fail_cleanup() {
+    # 정리는 이 셸에서 해야 상태를 비우고 wait 할 수 있으므로 파이프 대신 파일을 거쳐 들여써서 붙인다
+    LIVE_LEFT=""
+    live_cleanup >"$WORK/$1.cleanup.out"
+    sed 's/^/        /' "$WORK/$1.cleanup.out"
+    # 남은 것이 없으면 그 시나리오만 FAIL 하고 다음으로 간다
+    [[ -z "$LIVE_LEFT" ]] && return 0
+    # 남은 세션과 손으로 정리하는 방법을 알린다
+    echo "[runner] 세션 cgroup $LIVE_LEFT 이(가) 정리 뒤에도 남아 러너를 멈춘다 (다음 시나리오, 인프라 검증, 누수 비교를 하지 않는다)"
+    echo "[runner] 손으로 정리: echo 1 | sudo tee $CHECK_CGROUP_ROOT/$LIVE_LEFT/cgroup.kill  (그 뒤 남은 netns, 맵 항목은 timeout 확인 절차처럼 하나씩 정리)"
+    # 실패로 표시해 작업 폴더를 남기고 종료 코드 2 로 끝낸다 (로더 정리는 EXIT 트랩이 한다)
+    ANY_FAIL=1
+    exit 2
+}
+
+# ---------------------------------------------------------------------------------------------
+# B안(live.json) 실행. agent-run 을 백그라운드로 띄우고, 준비 표시가 오면 host.sh 를 실행한 뒤 agent-run 이 끝나기를 기다린다.
+#   $1 시나리오 폴더  $2 이름  $3 스크립트  $4 ready (upper 기준 상대 경로)
+# 성공하면 0 이고 LIVE_RC 에 agent-run 의 종료 코드를 남긴다. 실패하면 FAIL 메시지를 내고 정리한 뒤 1 이다.
+# rootfs_env 는 부르는 쪽(run_one)의 지역 변수를 그대로 쓴다 (bash 함수는 부른 함수의 지역 변수를 본다).
+# ---------------------------------------------------------------------------------------------
+run_live() {
+    # 인자를 이름 있는 변수로 받는다
+    local dir="$1" name="$2" script="$3" ready="$4"
+    # ref 는 준비 표시가 "새것"인지 비교할 기준 파일, out 은 agent-run 출력, cdir 은 컨테이너 폴더
+    local ref="$WORK/$name.live_ref" out="$WORK/$name.agent.out" sid cgid cdir="" i ok=0 hrc lrc
+    # 기준 파일을 agent-run 보다 먼저 만든다. 이전 실행이 남긴 준비 표시(PID 재사용)는 이것보다 오래되어 무시된다
+    : >"$ref"
+    # 지난 B안 실행의 상태를 비운다
+    LIVE_RC=""
+    LIVE_SID=""
+    LIVE_CGID=""
+    # A안과 같은 줄을 백그라운드(&)로 실행한다 (timeout, 환경변수, 출력 파일 그대로)
+    ( cd "$SRC_DIR" && MYC_SESSIONS_ROOT="$SESS_ROOT" \
+        timeout "$AGENT_TIMEOUT_S" env "${rootfs_env[@]}" ./run_container.sh agent-run -- /bin/sh -c "$script" ) \
+        >"$out" 2>&1 &
+    # 방금 띄운 하위 셸의 pid. EXIT 트랩도 이 값을 보고 정리한다
+    LIVE_PID=$!
+    # 준비 표시를 0.1초마다 최대 LIVE_READY_TIMEOUT_S 초 기다린다
+    for ((i = 0; i < LIVE_READY_TIMEOUT_S * 10; i++)); do
+        # 세션 시작 줄을 아직 못 봤으면 찾아 본다
+        if [[ -z "$cdir" ]]; then
+            # run_one 과 같은 sed 로 세션 ID 와 cgroup_id 를 뽑는다
+            sid="$(sed -n 's/^\[\*\] 세션 시작: \([^ ]*\) (cgroup_id=.*/\1/p' "$out" | head -1)"
+            # 같은 줄의 cgroup_id
+            cgid="$(sed -n 's/^\[\*\] 세션 시작: [^ ]* (cgroup_id=\([^)]*\)).*/\1/p' "$out" | head -1)"
+            # 둘 다 형식이 맞을 때만 컨테이너 폴더를 확정한다 (이상한 글자가 든 세션 ID 는 경로로 쓰지 않는다)
+            if [[ "$sid" =~ ^[A-Za-z0-9._-]+$ && "$cgid" =~ ^[0-9]+$ ]]; then
+                # 정리가 쓸 수 있게 알려 둔다
+                LIVE_SID="$sid"
+                LIVE_CGID="$cgid"
+                # A안과 같은 규칙의 컨테이너 폴더
+                cdir="$CONTAINERS_ROOT/mycontainer-${sid##*-}"
+            fi
+        fi
+        # 준비 표시가 기준 파일보다 새것이면 준비된 것이다 (-nt: 수정 시각이 더 나중)
+        if [[ -n "$cdir" && "$cdir/upper/$ready" -nt "$ref" ]]; then ok=1; break; fi
+        # 준비되기 전에 agent-run 이 끝났으면 기다릴 이유가 없다
+        if ! kill -0 "$LIVE_PID" 2>/dev/null; then
+            # 종료 코드를 받는다
+            wait "$LIVE_PID" 2>/dev/null
+            # wait 의 결과가 agent-run 의 종료 코드이다
+            lrc=$?
+            # 이미 끝났으므로 정리할 것이 없다
+            LIVE_PID=""
+            echo "[FAIL] $name"
+            echo "        준비 전에 agent-run 이 끝남 (종료 코드 $lrc)"
+            echo "        출력: $out"
+            return 1
+        fi
+        # 0.1초 쉬고 다시 본다
+        sleep 0.1
+    done
+    # 마감 안에 준비 표시가 오지 않았으면 실패하고 정리한다
+    if [[ $ok -ne 1 ]]; then
+        echo "[FAIL] $name"
+        echo "        준비 표시가 오지 않음 (${LIVE_READY_TIMEOUT_S}초, ${cdir:-<컨테이너 폴더 모름>}/upper/$ready)"
+        echo "        출력: $out"
+        # 정리하고, 그래도 세션이 남았으면 러너를 멈춘다 (live_fail_cleanup)
+        live_fail_cleanup "$name"
+        return 1
+    fi
+    # 준비되었다. 컨테이너가 살아 있는 동안 host.sh 를 실행한다 (짧은 timeout, 출력은 시나리오별 파일)
+    MYC_UPPER="$cdir/upper" timeout "$LIVE_HOST_TIMEOUT_S" /bin/bash "$dir/host.sh" >"$WORK/$name.host.out" 2>&1
+    # 종료 코드를 바로 저장한다
+    hrc=$?
+    # host.sh 가 실패하면 판정까지 가지 않고 정리한다
+    if [[ $hrc -ne 0 ]]; then
+        echo "[FAIL] $name"
+        echo "        호스트 스텝(host.sh)이 실패했다. 종료 코드 $hrc"
+        echo "        출력: $WORK/$name.host.out"
+        # 정리하고, 그래도 세션이 남았으면 러너를 멈춘다 (live_fail_cleanup)
+        live_fail_cleanup "$name"
+        return 1
+    fi
+    # BLOCK 으로 세션이 종료되어 agent-run 이 끝나기를 최대 LIVE_EXIT_TIMEOUT_S 초 기다린다
+    for ((i = 0; i < LIVE_EXIT_TIMEOUT_S * 10; i++)); do
+        # 끝났으면 빠져나간다
+        kill -0 "$LIVE_PID" 2>/dev/null || break
+        # 0.1초 쉬고 다시 본다
+        sleep 0.1
+    done
+    # 아직 살아 있으면 실패하고 정리한다
+    if kill -0 "$LIVE_PID" 2>/dev/null; then
+        echo "[FAIL] $name"
+        echo "        BLOCK 뒤에도 세션이 끝나지 않음 (${LIVE_EXIT_TIMEOUT_S}초)"
+        echo "        출력: $out"
+        # 정리하고, 그래도 세션이 남았으면 러너를 멈춘다 (live_fail_cleanup)
+        live_fail_cleanup "$name"
+        return 1
+    fi
+    # 끝났다. 종료 코드를 받는다
+    wait "$LIVE_PID" 2>/dev/null
+    # 부르는 쪽이 읽는다
+    LIVE_RC=$?
+    # 정리할 것이 없다
+    LIVE_PID=""
+    LIVE_SID=""
+    LIVE_CGID=""
+    return 0
+}
+
+# ---------------------------------------------------------------------------------------------
 # 시나리오 하나 실행. 통과하면 0, 실패하면 1.
 # ---------------------------------------------------------------------------------------------
 run_one() {
@@ -545,6 +778,14 @@ run_one() {
     fi
     # $(cat 파일) : 파일 내용을 문자열로 읽어서 script 변수에 담는다. 이 문자열을 컨테이너 안에서 sh -c 로 실행한다.
     script="$(cat "$dir/run.sh")"
+    # live.json 이 있으면 B안(live=1)이고 ready 경로를 읽는다 (형식은 사전 점검이 확인했다)
+    local live=0 ready=""
+    if [[ -f "$dir/live.json" ]]; then
+        # B안 표시
+        live=1
+        # 준비 표시의 upper 기준 경로
+        ready="$(jq -r '.ready' "$dir/live.json")"
+    fi
 
     # 이 시나리오에만 줄 rootfs 환경. env 의 인자로 쓴다 (기본: MYC_ROOTFS 를 해제해 부른 셸의 값이 새어 들어가지 않게 한다)
     local rootfs_env=(-u MYC_ROOTFS) rf=""
@@ -577,11 +818,19 @@ run_one() {
     #   --                  : 그 뒤는 옵션이 아니라 agent-run 에게 줄 명령이라는 구분 표시.
     #   /bin/sh -c "$script": 컨테이너 안에서 스크립트 문자열을 sh 로 실행한다.
     #   >"파일" 2>&1         : 표준 출력을 파일에 쓰고, 오류 출력(2번)도 같은 곳으로 보낸다. 화면에는 아무것도 안 나오고 파일에 모인다.
+    # live.json 이 있으면 B안이다: 백그라운드로 띄우고 컨테이너가 살아 있는 동안 host.sh 를 실행한다 (run_live)
+    if [[ $live -eq 1 ]]; then
+        # 실패면 run_live 가 FAIL 메시지와 정리를 마쳤다
+        run_live "$dir" "$name" "$script" "$ready" || return 1
+        # 성공하면 agent-run 의 종료 코드를 받는다
+        rc="$LIVE_RC"
+    else
     ( cd "$SRC_DIR" && MYC_SESSIONS_ROOT="$SESS_ROOT" \
         timeout "$AGENT_TIMEOUT_S" env "${rootfs_env[@]}" ./run_container.sh agent-run -- /bin/sh -c "$script" ) \
         >"$WORK/$name.agent.out" 2>&1
     # $? : 바로 앞 명령(위의 ( ... ) 전체)의 종료 코드를 rc 에 저장한다. 다른 명령을 실행하면 $? 가 바뀌므로 바로 저장해야 한다.
     rc=$?
+    fi
 
     # 세션 ID 추출. agent-run 이 "[*] 세션 시작: <세션ID> (cgroup_id=...)" 를 출력한다.
     # sed -n 's/찾을패턴/바꿀내용/p' : 패턴과 맞는 줄에서 괄호로 묶은 부분(\( \) 안, 세션 ID)만 남겨 출력한다.
@@ -616,7 +865,8 @@ run_one() {
     # ---- 호스트 쪽 스텝 (선택). 시나리오 폴더에 host.sh 가 있을 때만 실행한다 ----
     # agent-run 이 끝난 뒤에 러너가 호스트에서 실행한다. 컨테이너가 쓴 파일은 컨테이너가 끝난 뒤에도 upperdir 에 남아 있으므로
     # "세션이 쓴 파일을 세션 밖이 실행"하는 사건을 레이스 없이 재현할 수 있다. (러너가 세션 cgroup 밖이라고 가정한다. s01 이 이를 검증한다)
-    if [[ -f "$dir/host.sh" ]]; then
+    # B안(live=1)은 host.sh 를 이미 컨테이너가 살아 있는 동안 실행했으므로 여기서 다시 실행하지 않는다
+    if [[ $live -eq 0 && -f "$dir/host.sh" ]]; then
         # 이 블록에서만 쓰는 변수들. hn0 는 호스트 스텝 전의 events.jsonl 줄 수, grown 은 줄이 늘었는지, waited 는 기다린 시간(ms).
         local suffix cdir hn0 hrc grown=0 waited=0
         # ${sid##*-} : 세션 ID 에서 마지막 '-' 앞을 모두 지우고 뒷부분만 남긴다 (예: 20261012-141616-1329260 -> 1329260).
@@ -776,6 +1026,8 @@ stop_loader() {
 # (아래 trap 이 간접 호출하므로 shellcheck 가 "도달할 수 없다"고 오인하는 것을 막는다)
 # shellcheck disable=SC2317
 cleanup() {
+    # B안 시나리오 도중에 끝나면 백그라운드 agent-run 과 세션 cgroup 을 먼저 정리한다 (없으면 아무것도 하지 않는다)
+    live_cleanup >&2
     stop_loader
     # 실패했거나 --keep 이면 로그 위치를 알려 주고 남긴다. 아니면 임시 폴더를 통째로 지운다
     # (WORK 는 위에서 mktemp 로 만든 이 실행 전용 폴더이다).

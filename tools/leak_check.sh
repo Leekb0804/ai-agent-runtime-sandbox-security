@@ -65,6 +65,8 @@ STABLE_TRIES="${MYC_LEAK_STABLE_TRIES:-20}"
 FD_EXTRA="${MYC_LEAK_FD_EXTRA:-132}"
 # 후반부 RSS 증가 한계 (kB)
 RSS_LIMIT_KB="${MYC_LEAK_RSS_LIMIT_KB:-1024}"
+# 로더의 세션 칸 수 (src/loader/session_log.c 의 MAX_SESSIONS). 칸이 다 차기 전에는 세션마다 로그 FD 가 늘어나는 것이 정상이다
+SESSION_SLOTS=64
 
 # 사용법을 stderr 로 내고 2 로 끝낸다
 usage() {
@@ -560,17 +562,31 @@ cmd_compare() {
             row N/A loader_fd_late "후반 0증가" - - - "후반부(라운드 >= $lr/2) 로더 스냅샷이 ${#late[@]}개"
             row N/A loader_rss_kb "<=${RSS_LIMIT_KB}kB" - - - "후반부 로더 스냅샷이 ${#late[@]}개"
         else
+            # judged: 센 쌍이 하나라도 있으면 1. psess: 마지막으로 본 앞쪽 스냅샷의 누적 세션 수 (미판정 안내에 쓴다)
+            local judged=0 psess=0
             # 이웃한 후반부 스냅샷 사이 증가를 더한다 (감소는 무시)
             for s in "${late[@]}"; do
-                # 앞 값이 있으면 증가분을 더한다
-                if [[ -n "$prev" ]] && (( V[$s:loader_fd] > V[$prev:loader_fd] )); then grow=$((grow + V[$s:loader_fd] - V[$prev:loader_fd])); fi
+                # 앞 값이 있으면 그 쌍을 본다
+                if [[ -n "$prev" ]]; then
+                    # 앞쪽 스냅샷의 누적 세션 수
+                    psess="${V[$prev:sessions]}"
+                    # 앞쪽이 세션 칸 수 이상일 때만 센다 (그 전에는 칸이 차면서 FD 가 느는 것이 정상이다)
+                    if (( psess >= SESSION_SLOTS )); then
+                        # 센 쌍이 있다
+                        judged=1
+                        # 증가분만 더한다
+                        if (( V[$s:loader_fd] > V[$prev:loader_fd] )); then grow=$((grow + V[$s:loader_fd] - V[$prev:loader_fd])); fi
+                    fi
+                fi
                 # 다음 비교를 위해 기억한다
                 prev="$s"
             done
             # 후반부 처음과 마지막 FD
             local lf="${V[${late[0]}:loader_fd]}" ll="${V[${late[-1]}:loader_fd]}"
+            # 센 쌍이 없으면 판정하지 않는다 (INFO 라서 종료 코드에 영향이 없다)
+            if [[ $judged -eq 0 ]]; then row INFO loader_fd_late "후반 0증가" "$lf" "$ll" - "미판정 (슬롯 포화 전: 세션 $psess < $SESSION_SLOTS)"
             # 증가가 0 이면 합격
-            if [[ $grow -eq 0 ]]; then row PASS loader_fd_late "후반 0증가" "$lf" "$ll" "+$grow"; else row FAIL loader_fd_late "후반 0증가" "$lf" "$ll" "+$grow" "후반부 스냅샷 사이 증가 합"; fi
+            elif [[ $grow -eq 0 ]]; then row PASS loader_fd_late "후반 0증가" "$lf" "$ll" "+$grow"; else row FAIL loader_fd_late "후반 0증가" "$lf" "$ll" "+$grow" "후반부 스냅샷 사이 증가 합"; fi
             # RSS: 후반부 첫 스냅샷과 마지막 스냅샷의 차이
             local rf="${V[${late[0]}:loader_rss_kb]}" rl="${V[${late[-1]}:loader_rss_kb]}"
             if (( rl - rf <= RSS_LIMIT_KB )); then row PASS loader_rss_kb "<=${RSS_LIMIT_KB}kB" "$rf" "$rl" "$((rl - rf))" "후반부"; else row FAIL loader_rss_kb "<=${RSS_LIMIT_KB}kB" "$rf" "$rl" "$((rl - rf))" "후반부 증가가 한계 초과"; fi

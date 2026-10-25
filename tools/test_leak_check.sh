@@ -203,6 +203,47 @@ base_set "$T/f_few"
 rm -f "$T/f_few/004_r20.snap" "$T/f_few/005_r30.snap" "$T/f_few/006_r40.snap"
 check "후반부 로더 스냅샷이 하나뿐이면 판정 불가 (rc 2)" 2 "" "$T/f_few"
 
+echo "[로더 FD: 세션 칸(64) 포화 전후]"
+# 로더 FD 만 바꾼 세트를 만든다. 인자: 폴더, 그 뒤로 "라벨:라운드:세션:FD" 를 차례로 (로더 시작 전 스냅샷은 자동으로 맨 앞에 둔다)
+fd_set() {
+    # 폴더
+    local d="$1" n=1 spec label round sess fd
+    shift
+    # 폴더를 새로 만든다
+    rm -rf "$d"; mkdir -p "$d"
+    # 시작 전 (로더 없음)
+    snap "$d" "$n" start 0 0 0 "" ""
+    # 나머지 스냅샷 (RSS 는 일정하게 둔다)
+    for spec in "$@"; do
+        # 순번을 올린다
+        n=$((n + 1))
+        # 콜론으로 나눈다
+        IFS=: read -r label round sess fd <<<"$spec"
+        # 로더가 떠 있는 스냅샷
+        snap "$d" "$n" "$label" "$round" "$sess" 1 "$fd" 5000
+    done
+}
+# (a) 짧은 실행: 세션 0, 5, 10 에서 FD 17, 27, 37 (세션당 +2). 칸이 차기 전이라 미판정이고 전체는 합격
+fd_set "$T/s_short" ready:0:0:17 r5:5:5:27 r10:10:10:37 end:10:10:37
+check "(a) 세션 10 까지 FD 가 늘어도 loader_fd_late 는 FAIL 이 아님 (합격)" 0 "" "$T/s_short"
+expect_text "(a) 미판정을 INFO 로 알림" "미판정 (슬롯 포화 전: 세션 10 < 64)"
+# (b) 세션 150, FD 가 145 에서 멈춤 -> 판정해서 합격
+fd_set "$T/s_sat" ready:0:0:17 r10:10:50:117 r20:20:100:145 r30:30:150:145 end:30:150:145
+check "(b) 포화 뒤 FD 가 145 에서 멈추면 합격" 0 "" "$T/s_sat"
+expect_text "(b) loader_fd_late 를 판정해 PASS" "PASS loader_fd_late"
+# (c) 포화 뒤에도 늘어남: 세션 64 에서 145, 100 에서 160 -> FAIL (160 은 상한 17+132=149 도 넘으므로 loader_fd_max 도 FAIL)
+fd_set "$T/s_grow" ready:0:0:17 r10:10:32:81 r20:20:64:145 r30:30:100:160 end:30:100:160
+check "(c) 포화 뒤에도 FD 가 늘면 loader_fd_late FAIL (상한도 넘어 loader_fd_max 도 FAIL)" 1 "loader_fd_late loader_fd_max" "$T/s_grow"
+# (c2) 같은 모양을 상한 안에서: 세션 64 에서 140, 100 에서 148 -> loader_fd_late 만 FAIL
+fd_set "$T/s_grow2" ready:0:0:17 r10:10:32:81 r20:20:64:140 r30:30:100:148 end:30:100:148
+check "(c2) 포화 뒤 증가가 상한 안이어도 loader_fd_late 만 FAIL" 1 "loader_fd_late" "$T/s_grow2"
+# (d) 경계: 후반부 쌍이 하나(mid -> end)뿐이고 앞쪽(mid)의 세션이 64 면 판정, 63 이면 미판정
+fd_set "$T/s_b64" ready:0:0:17 mid:10:64:140 end:20:74:142
+check "(d) 앞쪽 스냅샷 세션 64 면 판정 (증가 2 -> FAIL)" 1 "loader_fd_late" "$T/s_b64"
+fd_set "$T/s_b63" ready:0:0:17 mid:10:63:140 end:20:73:142
+check "(d) 앞쪽 스냅샷 세션 63 이면 미판정 (합격)" 0 "" "$T/s_b63"
+expect_text "(d) 63 의 미판정 안내" "미판정 (슬롯 포화 전: 세션 63 < 64)"
+
 echo "[로더 RSS]"
 base_set "$T/r_up" "loader_rss_kb=$((6500 + 1025))"
 check "후반부 RSS 증가가 1024kB 를 넘으면 그 항목만 FAIL" 1 "loader_rss_kb" "$T/r_up"

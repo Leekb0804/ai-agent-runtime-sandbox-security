@@ -43,6 +43,8 @@ ENVREC="$(mktemp)"
 FAKEDEV="$(mktemp -d)"
 # 가짜 누수 점검기(tools/mock/leak_check.sh)가 받은 호출을 적는 파일 (MOCK_LEAK_RECORD). 반복 묶음에서 쓴다
 LEAKREC="$(mktemp)"
+# 가짜 agent-run 의 live 모드가 받은 종료 신호를 적는 파일 (MOCK_LIVE_RECORD). B안 묶음에서 쓴다
+LIVEREC="$(mktemp)"
 # 테스트를 부른 셸의 값이 러너에 새어 들어가 결과가 흔들리지 않게 지운다 (필요한 케이스는 check 의 인자로 직접 준다)
 unset MYC_DEV_ROOTFS_DIR MYC_ROOTFS
 # check 가 러너에 넘길 추가 인자 (예: --only 패턴). 기본은 없음
@@ -99,7 +101,7 @@ failures=0
 OUT="$(mktemp)"
 # trap '명령' EXIT : 스크립트가 어떻게 끝나든 마지막에 그 명령을 실행한다. 여기서는 임시 파일을 지운다.
 # 마지막의 remove_scen_tmp 는 러너 작업 폴더를 모은 전용 폴더를 지운다 (안전장치는 함수 안에 있다)
-trap 'rm -f "$OUT" "$MAPCOUNT" "$LREC" "$ENVREC" "$LEAKREC"; rm -rf "$SCEN" "$CONT" "$CGR" "$FAKEDEV"; remove_scen_tmp "$SCENTMP"' EXIT
+trap 'rm -f "$OUT" "$MAPCOUNT" "$LREC" "$ENVREC" "$LEAKREC" "$LIVEREC"; rm -rf "$SCEN" "$CONT" "$CGR" "$FAKEDEV"; remove_scen_tmp "$SCENTMP"' EXIT
 
 # 러너 출력(OUT 파일)에 "결과: FAILED" 줄이 있는지 확인한다. 있으면 참(0), 없으면 거짓(1)을 돌려준다.
 # 러너가 종료 코드 1 로 끝나는 exit 는 run_scenarios.sh 맨 끝 한 곳뿐이고 그 바로 앞에서 이 줄을 낸다.
@@ -618,6 +620,222 @@ RUNNER_ARGS=(--only s00_benign)
 : >"$LEAKREC"
 check "rp12 --repeat 가 없으면 기존과 같이 돎" 0 MOCK_MODE=normal "${LEAK_ENV[@]}"
 if [[ -s "$LEAKREC" ]]; then echo "  FAIL  rp12 누수 점검기가 불렸음"; sed 's/^/        /' "$LEAKREC"; failures=$((failures + 1)); else echo "  PASS  rp12 누수 점검기를 부르지 않음"; fi
+RUNNER_ARGS=()
+echo
+
+echo "[B안 (live.json: 컨테이너가 살아 있는 동안 host.sh)]"
+# 임시 시나리오 s_live 를 만든다. run.sh 에 trigger 가 있어서 mock 이 s99 로그를 쓰고 기대도 s99 것이다 (판정은 통과하고 흐름만 본다)
+# 인자: $1 = live.json 내용 (빈 문자열이면 만들지 않음), $2 = host.sh 본문 (빈 문자열이면 만들지 않음), $3 = runtime.json 을 만들면 1
+make_live_scn() {
+    # 이전 케이스가 남긴 폴더를 지우고 새로 만든다
+    rm -rf "$SCEN/s_live"
+    mkdir -p "$SCEN/s_live"
+    # 컨테이너 안 스크립트 (mock 은 내용 중 trigger 만 본다)
+    echo 'echo x > /tmp/payload; /tmp/trigger; touch /tmp/myc_ready; sleep 20' > "$SCEN/s_live/run.sh"
+    # 판정 기대는 s99 와 같다
+    cp "$ROOT/scenarios/s99_dummy_block/expect.json" "$SCEN/s_live/expect.json"
+    # live.json (printf 형식이 아니라 그대로 쓴다)
+    [[ -n "$1" ]] && printf '%s\n' "$1" > "$SCEN/s_live/live.json"
+    # host.sh
+    [[ -n "$2" ]] && printf '%s\n' "$2" > "$SCEN/s_live/host.sh"
+    # runtime.json (B안 필수)
+    [[ "${3:-1}" == 1 ]] && echo '{"exit_code":137,"cgroup_gone":true,"map_entry_gone":true}' > "$SCEN/s_live/runtime.json"
+    # 함수의 종료 코드가 마지막 && 의 거짓에 끌려가지 않게 성공으로 끝낸다
+    return 0
+}
+# 기록 파일이 기대한 줄들과 정확히 같은지 본다 (줄 수와 순서까지). 인자: 설명, 기대 줄들 (없으면 빈 파일이어야 한다)
+expect_liverec() {
+    # 설명과 기대 내용
+    local msg="$1" want=""
+    shift
+    # 기대 줄이 있으면 이어 붙인다
+    (($# > 0)) && want="$(printf '%s\n' "$@")"
+    # 비교
+    if [[ "$(<"$LIVEREC")" == "$want" ]]; then
+        printf '  PASS  %s\n' "$msg"
+    else
+        # 기대와 실제를 보여 준다
+        printf '  FAIL  %s\n        기대:\n' "$msg"; sed 's/^/          /' <<<"$want"
+        printf '        실제:\n'; sed 's/^/          /' "$LIVEREC"
+        failures=$((failures + 1))
+    fi
+}
+# 컨테이너 폴더들에 남은 host_runs 파일의 줄 수 합 (host.sh 가 몇 번 실행됐는지). 케이스 전에 지워 둔다
+count_host_runs() {
+    # 파일이 없으면 0 이다
+    find "$CONT" -name host_runs -exec cat {} + 2>/dev/null | wc -l | tr -d ' '
+}
+# 이 묶음은 s_live 하나만 실행한다
+RUNNER_ARGS=(--only s_live)
+# 공통 환경: live 모드, 가짜 cgroup 루트(정리와 cgroup_gone 이 보는 곳), 가짜 bpftool(맵 항목 없음), 신호 기록 파일
+LIVE_ENV=(MOCK_MODE=live MYC_CHECK_CGROUP_ROOT="$CGR" MYC_BPFTOOL="$HERE/mock/bpftool" MOCK_MAP=absent MOCK_LIVE_RECORD="$LIVEREC")
+# 정상 host.sh: 실행 횟수를 남기고 mock 에 종료 신호를 준다 (진짜에서는 로더의 BLOCK 이 cgroup.kill 을 쓰는 자리)
+LIVE_HOST_OK='echo run >>"${MYC_UPPER:?}/host_runs"; touch "$MYC_UPPER/mock_kill"'
+# lv1~lv9: live.json 형식 오류는 사전 점검에서 거부한다 (종료 코드 2)
+make_live_scn '{"ready":' "$LIVE_HOST_OK"
+check "lv1 live.json 이 깨진 JSON -> 시작 거부" 2 "${LIVE_ENV[@]}"
+expect_text "lv1 이유를 알림" "live.json 형식 오류"
+make_live_scn '{"ready":"tmp/myc_ready","x":1}' "$LIVE_HOST_OK"
+check "lv2 live.json 에 알 수 없는 키 -> 시작 거부" 2 "${LIVE_ENV[@]}"
+expect_text "lv2 이유를 알림" "live.json 형식 오류"
+make_live_scn '{}' "$LIVE_HOST_OK"
+check "lv3 live.json 에 ready 가 없음 -> 시작 거부" 2 "${LIVE_ENV[@]}"
+make_live_scn '{"ready":1}' "$LIVE_HOST_OK"
+check "lv4 ready 가 문자열이 아님 -> 시작 거부" 2 "${LIVE_ENV[@]}"
+make_live_scn '{"ready":""}' "$LIVE_HOST_OK"
+check "lv5 ready 가 빈 문자열 -> 시작 거부" 2 "${LIVE_ENV[@]}"
+make_live_scn '{"ready":"/tmp/myc_ready"}' "$LIVE_HOST_OK"
+check "lv6 ready 가 절대 경로 -> 시작 거부" 2 "${LIVE_ENV[@]}"
+make_live_scn '{"ready":"tmp/../myc_ready"}' "$LIVE_HOST_OK"
+check "lv7 ready 에 .. -> 시작 거부" 2 "${LIVE_ENV[@]}"
+make_live_scn '{"ready":"tmp/a\nb"}' "$LIVE_HOST_OK"
+check "lv8 ready 에 개행 -> 시작 거부" 2 "${LIVE_ENV[@]}"
+make_live_scn '{"ready":"tmp/a\u0000b"}' "$LIVE_HOST_OK"
+check "lv9 ready 에 NUL -> 시작 거부" 2 "${LIVE_ENV[@]}"
+# 형식 오류에서는 시나리오를 하나도 돌리지 않았어야 한다
+if grep -qF "== 시나리오 실행" "$OUT"; then echo "  FAIL  lv9 시나리오를 돌기 시작함"; failures=$((failures + 1)); else echo "  PASS  lv9 시나리오를 하나도 돌리지 않음"; fi
+# lv10: B안인데 host.sh 가 없음
+make_live_scn '{"ready":"tmp/myc_ready"}' ''
+check "lv10 live.json 이 있는데 host.sh 가 없음 -> 시작 거부" 2 "${LIVE_ENV[@]}"
+expect_text "lv10 이유를 알림" "live.json 이 있는데 host.sh 가 없다"
+# lv11: B안인데 runtime.json 이 없음
+make_live_scn '{"ready":"tmp/myc_ready"}' "$LIVE_HOST_OK" 0
+check "lv11 live.json 이 있는데 runtime.json 이 없음 -> 시작 거부" 2 "${LIVE_ENV[@]}"
+expect_text "lv11 이유를 알림" "live.json 이 있는데 runtime.json 이 없다"
+# lv12: 정상 흐름. 준비 표시 -> host.sh 한 번 -> 신호 -> 137 -> 판정과 런타임 검사 통과
+make_live_scn '{"ready":"tmp/myc_ready"}' "$LIVE_HOST_OK"
+find "$CONT" -name host_runs -delete
+: >"$LIVEREC"
+check "lv12 B안 정상 흐름 -> 통과" 0 "${LIVE_ENV[@]}"
+expect_liverec "lv12 mock 이 host.sh 의 신호로 끝남 (정리의 cgroup.kill 없음)" "mock_kill 받음"
+# host.sh 는 정확히 한 번 실행되어야 한다 (A안 블록에서 다시 실행되면 2)
+n="$(count_host_runs)"
+if [[ "$n" == 1 ]]; then echo "  PASS  lv12 host.sh 가 한 번만 실행됨"; else echo "  FAIL  lv12 host.sh 실행 횟수 $n (기대 1)"; failures=$((failures + 1)); fi
+# lv13: 준비 표시가 오지 않음 -> 준비 마감(15초) FAIL, 정리가 cgroup.kill 을 쓰고 agent-run 이 137 로 끝남
+make_live_scn '{"ready":"tmp/myc_ready"}' "$LIVE_HOST_OK"
+: >"$LIVEREC"
+check "lv13 준비 표시가 오지 않음 -> FAIL" 1 "${LIVE_ENV[@]}" MOCK_LIVE=noready
+expect_text "lv13 이유를 알림" "준비 표시가 오지 않음 (15초"
+expect_text "lv13 정리가 cgroup.kill 을 씀" "[정리] cgroup.kill 에 1 을 씀"
+expect_text "lv13 정리 뒤 agent-run 이 끝남" "[정리] agent-run 종료 (종료 코드 137)"
+expect_liverec "lv13 mock 이 정리의 cgroup.kill 을 받음" "cgroup.kill 받음"
+# lv14: 준비 전에 agent-run 이 끝남 -> FAIL 과 종료 코드
+make_live_scn '{"ready":"tmp/myc_ready"}' "$LIVE_HOST_OK"
+check "lv14 준비 전에 agent-run 이 끝남 -> FAIL" 1 "${LIVE_ENV[@]}" MOCK_LIVE=early
+expect_text "lv14 종료 코드를 알림" "준비 전에 agent-run 이 끝남 (종료 코드 0)"
+# lv15: host.sh 뒤에도 끝나지 않음 -> 종료 마감(30초) FAIL, 정리가 cgroup.kill 을 쓰지만 mock 이 무시해 남는다.
+# 남은 세션이 다음 시나리오를 오염시키므로 러너는 그 자리에서 멈춰야 한다 (종료 코드 2, 다음 시나리오 s_lz 와 인프라 검증을 하지 않음)
+make_live_scn '{"ready":"tmp/myc_ready"}' 'exit 0'
+# s_live 다음 이름순으로 도는 A안 시나리오 (러너가 멈추지 않으면 실행된다)
+rm -rf "$SCEN/s_lz"; mkdir -p "$SCEN/s_lz"
+echo '/bin/ls' > "$SCEN/s_lz/run.sh"
+cp "$ROOT/scenarios/s00_benign/expect.json" "$SCEN/s_lz/expect.json"
+RUNNER_ARGS=(--only s_live --only s_lz)
+: >"$LIVEREC"
+check "lv15 BLOCK 뒤에도 세션이 끝나지 않고 정리 뒤에도 남음 -> 러너를 멈춤 (rc 2)" 2 "${LIVE_ENV[@]}" MOCK_LIVE=nokill
+expect_text "lv15 이유를 알림" "BLOCK 뒤에도 세션이 끝나지 않음 (30초)"
+expect_text "lv15 정리 뒤에도 남았다고 알림" "10초 뒤에도 남아 있음"
+expect_text "lv15 멈춘다고 알리고 남은 cgroup 이름을 적음" "[runner] 세션 cgroup mycontainer-"
+expect_text "lv15 손으로 정리하는 방법을 알림" "/cgroup.kill"
+expect_text "lv15 작업 폴더를 남김" "로그 보관:"
+expect_liverec "lv15 mock 이 정리의 cgroup.kill 을 받음 (무시)" "cgroup.kill 받음 (무시)"
+# 다음 시나리오와 인프라 검증, 결과 줄이 없어야 한다
+if grep -qE "s_lz|== 인프라 검증|^결과:" "$OUT"; then echo "  FAIL  lv15 멈춘 뒤에도 다음 시나리오나 인프라 검증을 함"; sed 's/^/        /' "$OUT"; failures=$((failures + 1)); else echo "  PASS  lv15 다음 시나리오, 인프라 검증, 결과 줄 없음"; fi
+RUNNER_ARGS=(--only s_live)
+# lv16: host.sh 가 실패 -> FAIL, 정리가 cgroup.kill 을 쓰고 agent-run 이 137 로 끝남
+make_live_scn '{"ready":"tmp/myc_ready"}' 'exit 3'
+: >"$LIVEREC"
+check "lv16 B안 host.sh 실패 -> FAIL" 1 "${LIVE_ENV[@]}"
+expect_text "lv16 이유를 알림" "호스트 스텝(host.sh)이 실패했다. 종료 코드 3"
+expect_text "lv16 정리 뒤 agent-run 이 끝남" "[정리] agent-run 종료 (종료 코드 137)"
+expect_liverec "lv16 mock 이 정리의 cgroup.kill 을 받음" "cgroup.kill 받음"
+# lv17: 오래된 준비 표시가 먼저 있어도 새 표시가 올 때까지 기다린다 (-nt). 일찍 실행되면 host.sh 가 fresh_ready 를 못 보고 3 으로 실패한다
+make_live_scn '{"ready":"tmp/myc_ready"}' '[[ -e "${MYC_UPPER:?}/fresh_ready" ]] || exit 3; touch "$MYC_UPPER/mock_kill"'
+: >"$LIVEREC"
+check "lv17 오래된 준비 표시는 무시하고 새것을 기다림 -> 통과" 0 "${LIVE_ENV[@]}" MOCK_LIVE=stale
+expect_liverec "lv17 mock 이 host.sh 의 신호로 끝남" "mock_kill 받음"
+# lv18: 정리 때 cgroup inode 가 cgroup_id 와 다르면 cgroup.kill 을 쓰지 않는다 (mock 은 신호를 못 받아 남는다)
+make_live_scn '{"ready":"tmp/myc_ready"}' "$LIVE_HOST_OK"
+: >"$LIVEREC"
+# 쓰지 않았으므로 세션이 남고, 남으면 러너가 멈춘다 (종료 코드 2)
+check "lv18 준비 마감 FAIL (inode 다름) -> 남아서 러너를 멈춤 (rc 2)" 2 "${LIVE_ENV[@]}" MOCK_LIVE=noready MOCK_LIVE_INODE=wrong MOCK_LIVE_MAX_S=30
+expect_text "lv18 inode 가 달라 쓰지 않았다고 알림" "와 달라 cgroup.kill 을 쓰지 않음"
+expect_text "lv18 남았다고 알림" "10초 뒤에도 남아 있음"
+expect_liverec "lv18 mock 이 cgroup.kill 을 받지 않음"
+# lv19: --repeat 에서 B안 시나리오가 라운드마다 돌고 스냅샷 호출 흐름이 그대로이다
+make_live_scn '{"ready":"tmp/myc_ready"}' "$LIVE_HOST_OK"
+RUNNER_ARGS=(--repeat 2 --leak-interval 1 --only s_live)
+: >"$LEAKREC"
+check "lv19 --repeat 2 의 B안 시나리오 -> 합격" 0 "${LIVE_ENV[@]}" "${LEAK_ENV[@]}"
+expect_leakrec "lv19 스냅샷 호출 흐름" "snapshot start 0 0 loader=없음" "snapshot ready 0 0 loader=있음" "snapshot r1 1 1 loader=있음" "snapshot r2 2 2 loader=있음" "snapshot end 2 2 loader=있음" "compare"
+# lv20: --repeat 에서 B안 FAIL 이면 첫 FAIL 에서 멈추고 비교하지 않는다
+RUNNER_ARGS=(--repeat 3 --leak-interval 1 --only s_live)
+: >"$LEAKREC"
+check "lv20 --repeat 3 의 B안 FAIL -> 첫 라운드에서 멈춤" 1 "${LIVE_ENV[@]}" "${LEAK_ENV[@]}" MOCK_LIVE=early
+expect_text "lv20 멈췄다고 알림" "반복 중 FAIL 로 멈춤 (라운드 1, 세션 1)"
+expect_leakrec "lv20 스냅샷은 시작 두 개뿐이고 비교 없음" "snapshot start 0 0 loader=없음" "snapshot ready 0 0 loader=있음"
+# lv22: --repeat 중 정리 뒤에도 세션이 남으면 라운드 중간에 멈추고 비교하지 않는다 (종료 코드 2)
+make_live_scn '{"ready":"tmp/myc_ready"}' 'exit 0'
+RUNNER_ARGS=(--repeat 2 --leak-interval 1 --only s_live)
+: >"$LEAKREC"
+: >"$LIVEREC"
+check "lv22 --repeat 중 정리 뒤에도 세션이 남음 -> 멈춤 (rc 2)" 2 "${LIVE_ENV[@]}" "${LEAK_ENV[@]}" MOCK_LIVE=nokill
+expect_text "lv22 남은 cgroup 이름을 적음" "[runner] 세션 cgroup mycontainer-"
+expect_leakrec "lv22 스냅샷은 시작 두 개뿐이고 비교 없음" "snapshot start 0 0 loader=없음" "snapshot ready 0 0 loader=있음"
+# 반복 루프의 "FAIL 로 멈춤" 경로가 아니라 그 자리에서 끝났어야 한다
+if grep -qE "반복 중 FAIL 로 멈춤|== 누수 점검|^결과:" "$OUT"; then echo "  FAIL  lv22 멈춘 뒤에도 반복 정리나 누수 비교를 함"; failures=$((failures + 1)); else echo "  PASS  lv22 라운드 중간에 끝나고 누수 비교 없음"; fi
+# lv23, lv24: B안 대기 중 신호로 끝나면 EXIT 트랩이 B안 정리(cgroup.kill)를 돌린다
+# 비대화 셸의 & 는 INT 를 무시하게 만들므로 env --default-signal 로 되돌리고, setsid 로 러너를 새 프로세스 그룹의 대표로 띄운다
+# INT 는 Ctrl-C 처럼 그룹 전체에, TERM 은 러너에게만 보낸다. 인자: 설명 머리, 신호, 그룹이면 1, 기대 종료 코드
+sig_case() {
+    # 인자
+    local tag="$1" sig="$2" group="$3" want="$4" pid rc tok
+    # 남은 mock 을 찾을 표시 (스크립트에 넣는다)
+    tok="sigprobe_${tag}_$$"
+    # B안 시나리오: mock noready 는 준비 표시를 쓰지 않아 러너가 준비 대기(15초)에 머문다
+    make_live_scn '{"ready":"tmp/myc_ready"}' 'exit 0'
+    # 스크립트에 표시를 넣는다 (trigger 는 그대로 둔다)
+    echo "echo $tok; /tmp/trigger; sleep 20" > "$SCEN/s_live/run.sh"
+    : >"$LIVEREC"
+    # 러너를 백그라운드로 띄운다 (check 와 같은 환경)
+    setsid env --default-signal=INT,TERM MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MYC_CONTAINERS_ROOT="$CONT" \
+        "${LIVE_ENV[@]}" MOCK_LIVE=noready "$RUNNER" --only s_live >"$OUT" 2>&1 &
+    # 러너 pid (setsid 가 exec 하므로 같은 pid 이고 그룹 번호이다)
+    pid=$!
+    # 준비 대기에 들어갈 때까지 기다린다
+    sleep 3
+    # 그룹이면 음수 pid 로 그룹 전체에 보낸다
+    if [[ "$group" == 1 ]]; then kill -"$sig" -- -"$pid"; else kill -"$sig" "$pid"; fi
+    # 러너가 끝나기를 기다리고 종료 코드를 받는다
+    wait "$pid"; rc=$?
+    # 종료 코드
+    if [[ "$rc" == "$want" ]]; then echo "  PASS  $tag $sig 로 끝나면 종료 코드 $want"; else echo "  FAIL  $tag $sig 종료 코드 $rc (기대 $want)"; sed 's/^/        /' "$OUT"; failures=$((failures + 1)); fi
+    # 정리가 cgroup.kill 을 썼다
+    expect_liverec "$tag $sig 에도 정리가 cgroup.kill 을 씀" "cgroup.kill 받음"
+    # mock 이 남지 않았다 (정리가 끝나기를 기다렸으므로 이미 없어야 한다)
+    if pgrep -f "$tok" >/dev/null 2>&1; then echo "  FAIL  $tag $sig 뒤에 mock 이 남음"; pkill -f "$tok"; failures=$((failures + 1)); else echo "  PASS  $tag $sig 뒤에 mock 이 남지 않음"; fi
+}
+sig_case lv23 INT 1 130
+sig_case lv24 TERM 0 143
+rm -rf "$SCEN/s_live" "$SCEN/s_lz"
+# lv21: live.json 이 없는 A안 시나리오는 그대로 agent-run 이 끝난 뒤 host.sh 를 한 번 실행하고 B안 파일을 만들지 않는다
+rm -rf "$SCEN/s_host_a"
+mkdir -p "$SCEN/s_host_a"
+echo '/bin/ls' > "$SCEN/s_host_a/run.sh"
+cp "$ROOT/scenarios/s00_benign/expect.json" "$SCEN/s_host_a/expect.json"
+echo 'echo run >>"${MYC_UPPER:?}/host_runs"' > "$SCEN/s_host_a/host.sh"
+find "$CONT" -name host_runs -delete
+RUNNER_ARGS=(--keep --only s_host_a)
+check "lv21 A안 host.sh 시나리오 -> 통과" 0 MOCK_MODE=normal
+# 보관된 작업 폴더 (--keep)
+kept="$(sed -n 's/^로그 보관: //p' "$OUT")"
+n="$(count_host_runs)"
+if [[ "$n" == 1 && -n "$kept" && -f "$kept/s_host_a.host.out" && ! -e "$kept/s_host_a.live_ref" ]]; then
+    echo "  PASS  lv21 A안은 host.sh 를 한 번 실행하고 B안 기준 파일을 만들지 않음"
+else
+    echo "  FAIL  lv21 A안 동작이 바뀜 (host_runs $n, 보관 폴더 '$kept')"; failures=$((failures + 1))
+fi
+rm -rf "$SCEN/s_host_a"
 RUNNER_ARGS=()
 echo
 

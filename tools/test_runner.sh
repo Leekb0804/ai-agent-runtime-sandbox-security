@@ -817,6 +817,90 @@ sig_case() {
 }
 sig_case lv23 INT 1 130
 sig_case lv24 TERM 0 143
+# si1, si2: timeout 으로 감싼 host.sh 단계 중에 신호를 받으면, 그 단계가 끝난 즉시 EXIT 트랩의 정리가 돌고 130/143 으로 끝난다
+# (timeout 은 자기 프로세스 그룹을 따로 만들어 그룹 INT 가 host.sh 에 닿지 않는다. trap 이 없으면 러너는 INT 를 버리고 계속 돈다)
+# 인자: 설명 머리, 신호, 그룹이면 1, 기대 종료 코드
+host_sig_case() {
+    # 인자
+    local tag="$1" sig="$2" group="$3" want="$4" pid rc tok hs hd t0 el done_at_exit
+    # 남은 mock 을 찾을 표시, host.sh 의 시작과 끝 표시 파일
+    tok="hsigprobe_${tag}_$$"; hs="$SCENTMP/${tag}.host_started"; hd="$SCENTMP/${tag}.host_done"
+    # B안 시나리오: host.sh 가 시작 표시를 남기고 3초 잔 뒤 끝 표시를 남긴다 (mock 에 종료 신호는 주지 않는다)
+    make_live_scn '{"ready":"tmp/myc_ready"}' "touch '$hs'; sleep 3; touch '$hd'"
+    # 스크립트에 표시를 넣는다 (trigger 는 그대로 둔다)
+    echo "echo $tok; /tmp/trigger; sleep 20" > "$SCEN/s_live/run.sh"
+    : >"$LIVEREC"
+    # 러너를 새 프로세스 그룹의 대표로 띄운다 (INT/TERM 은 기본 처리로 되돌린다)
+    setsid env --default-signal=INT,TERM MYC_RUNNER_TEST=1 MYC_SRC_DIR="$HERE/mock" MYC_SCEN_DIR="$SCEN" MYC_CONTAINERS_ROOT="$CONT" \
+        "${LIVE_ENV[@]}" MOCK_LIVE=ok "$RUNNER" --only s_live >"$OUT" 2>&1 &
+    # 러너 pid (= 그룹 번호)
+    pid=$!
+    # host.sh 가 시작될 때까지 기다린다 (최대 20초)
+    for ((k = 0; k < 200; k++)); do [[ -e "$hs" ]] && break; sleep 0.1; done
+    # host.sh 단계 안으로 1초 들어간다
+    sleep 1
+    # 신호를 보낸 시각 (초)
+    t0=$SECONDS
+    # 그룹이면 음수 pid 로 그룹 전체에 보낸다 (Ctrl-C 와 같다)
+    if [[ "$group" == 1 ]]; then kill -"$sig" -- -"$pid"; else kill -"$sig" "$pid"; fi
+    # 러너가 끝나기를 기다린다
+    wait "$pid"; rc=$?
+    # 걸린 시간, 그리고 러너가 끝난 순간에 host.sh 가 이미 끝나 있었는지
+    el=$((SECONDS - t0)); done_at_exit=0; [[ -e "$hd" ]] && done_at_exit=1
+    # 종료 코드
+    if [[ "$rc" == "$want" ]]; then echo "  PASS  $tag $sig(host.sh 단계 중) 로 끝나면 종료 코드 $want"; else echo "  FAIL  $tag $sig 종료 코드 $rc (기대 $want)"; sed 's/^/        /' "$OUT"; failures=$((failures + 1)); fi
+    # host.sh 단계(남은 약 2초)가 끝난 뒤 곧 끝나야 한다 (계속 돌면 종료 마감 30초를 기다린다)
+    if ((el <= 8)); then echo "  PASS  $tag 신호 뒤 ${el}초 안에 끝남"; else echo "  FAIL  $tag 신호 뒤 ${el}초 걸림 (8초 이하 기대)"; failures=$((failures + 1)); fi
+    # 러너는 host.sh 단계가 끝난 뒤에 끝나야 한다 (먼저 끝나면 host.sh 가 러너 밖에 혼자 남는다)
+    if [[ $done_at_exit == 1 ]]; then echo "  PASS  $tag host.sh 단계가 끝난 뒤에 러너가 끝남"; else echo "  FAIL  $tag 러너가 host.sh 보다 먼저 끝남 (host.sh 가 혼자 남음)"; failures=$((failures + 1)); fi
+    # 정리가 cgroup.kill 을 썼다
+    expect_liverec "$tag $sig 에도 정리가 cgroup.kill 을 씀" "cgroup.kill 받음"
+    # mock 이 남지 않았다 (정확한 패턴: 이 케이스의 표시가 든 mock 명령줄)
+    sleep 1
+    # (러너는 src 폴더로 cd 한 뒤 ./run_container.sh 로 부르므로 경로 대신 이름 뒤의 인자로 찾는다)
+    if pgrep -f -- "run_container\.sh agent-run -- /bin/sh -c echo $tok" >/dev/null 2>&1; then echo "  FAIL  $tag 뒤에 mock 이 남음"; failures=$((failures + 1)); else echo "  PASS  $tag 뒤에 mock 이 남지 않음"; fi
+}
+host_sig_case si1 INT 1 130
+host_sig_case si2 TERM 0 143
+# lt1~lt4: B안 지연 측정 (판정에는 영향이 없다)
+# lt1: mock 이 host.sh 의 신호를 받고 600ms 더 산 뒤 끝난다. host.sh 는 신호를 준 뒤 0.4초 더 돈다.
+# 측정한 전체는 600ms 이상, 600 + 400ms 이하여야 한다 (mock 의 신호 확인 간격 0.02초, timeout 의 반환 지연 최대 약 100ms 를 포함한다)
+make_live_scn '{"ready":"tmp/myc_ready"}' 'touch "${MYC_UPPER:?}/mock_kill"; sleep 0.4'
+RUNNER_ARGS=(--only s_live)
+check "lt1 B안 지연 측정 시나리오 -> 통과" 0 "${LIVE_ENV[@]}" MOCK_LIVE_DELAY_MS=600
+# 출력의 "지연: 전체 N ms" 에서 N 을 뽑는다
+lat="$(sed -n 's/^ *지연: 전체 \([0-9-]*\) ms.*/\1/p' "$OUT" | head -1)"
+if [[ "$lat" =~ ^[0-9]+$ ]] && ((lat >= 600 && lat <= 1000)); then echo "  PASS  lt1 전체 지연 ${lat}ms 가 600~1000ms 안"; else echo "  FAIL  lt1 전체 지연 '${lat}' 가 600~1000ms 밖"; sed 's/^/        /' "$OUT"; failures=$((failures + 1)); fi
+# mock 의 fixture 로그에는 TAG_HIT 이 없으므로 구간은 n/a 이고, 그래도 판정은 통과했다
+expect_text "lt1 기록이 없으면 구간은 n/a" "실행→HIT n/a, HIT→kill 요청 n/a, kill 요청→종료 n/a"
+# lt2: 정밀도. 가짜 timeout(지속 시간 인자를 버리고 그대로 실행)으로 uutils timeout 의 반환 지연(최대 약 100ms)을 뺀 뒤,
+# 라운드마다 "측정한 전체 - (mock 이 끝난 시각 - host.sh 가 시작한 시각)" 이 0~50ms 인지 본다 (확인 간격 0.02초 + 프로세스 정리)
+FAKEBIN="$(mktemp -d)"
+printf '%s\n' '#!/bin/bash' '# 시험용 가짜 timeout: 첫 인자(시간)를 버리고 나머지를 그대로 실행한다' 'shift' 'exec "$@"' > "$FAKEBIN/timeout"
+chmod +x "$FAKEBIN/timeout"
+TIMES="$(mktemp)"
+make_live_scn '{"ready":"tmp/myc_ready"}' "us=\${EPOCHREALTIME//[!0-9]/}; echo \"start \$((us / 1000))\" >>'$TIMES'; touch \"\${MYC_UPPER:?}/mock_kill\"; sleep 0.2"
+RUNNER_ARGS=(--repeat 5 --only s_live)
+check "lt2 B안 5라운드 (가짜 timeout) -> 통과" 0 "${LIVE_ENV[@]}" "${LEAK_ENV[@]}" PATH="$FAKEBIN:$PATH" MOCK_LIVE_DELAY_MS=400 MOCK_LIVE_TIMES="$TIMES"
+# 보관된 작업 폴더의 latency.tsv 와 시각 기록을 맞춰 본다
+kept="$(sed -n 's/^로그 보관: //p' "$OUT")"
+mapfile -t meas < <(cut -f3 "$kept/latency.tsv" 2>/dev/null)
+mapfile -t starts < <(sed -n 's/^start //p' "$TIMES")
+mapfile -t exits < <(sed -n 's/^exit //p' "$TIMES")
+bad=""; errs=""
+if ((${#meas[@]} != 5 || ${#starts[@]} != 5 || ${#exits[@]} != 5)); then bad="개수 다름 (측정 ${#meas[@]}, 시작 ${#starts[@]}, 끝 ${#exits[@]})"; else
+    for ((k = 0; k < 5; k++)); do e=$(( meas[k] - (exits[k] - starts[k]) )); errs+="$e "; ((e < 0 || e > 50)) && bad="오차 범위 밖"; done
+fi
+if [[ -z "$bad" ]]; then echo "  PASS  lt2 라운드마다 오차 0~50ms (오차: ${errs})"; else echo "  FAIL  lt2 $bad (오차: ${errs})"; failures=$((failures + 1)); fi
+expect_text "lt2 반복이면 끝에 지연 요약" "지연 요약 (B안, 5회)"
+expect_text "lt2 요약에 전체의 최소, 중앙값, 최대" "  전체: 최소 "
+rm -rf "$FAKEBIN" "$TIMES"
+# lt3: 판정에는 영향이 없다. 로그가 기대와 다른 B안(s00 기대)은 지연 줄이 있어도 FAIL 이다
+make_live_scn '{"ready":"tmp/myc_ready"}' "$LIVE_HOST_OK"
+cp "$ROOT/scenarios/s00_benign/expect.json" "$SCEN/s_live/expect.json"
+RUNNER_ARGS=(--only s_live)
+check "lt3 판정이 어긋난 B안은 지연 측정과 무관하게 FAIL" 1 "${LIVE_ENV[@]}"
+expect_text "lt3 FAIL 이어도 지연 줄은 나옴" "지연: 전체 "
 rm -rf "$SCEN/s_live" "$SCEN/s_lz"
 # lv21: live.json 이 없는 A안 시나리오는 그대로 agent-run 이 끝난 뒤 host.sh 를 한 번 실행하고 B안 파일을 만들지 않는다
 rm -rf "$SCEN/s_host_a"
@@ -827,6 +911,8 @@ echo 'echo run >>"${MYC_UPPER:?}/host_runs"' > "$SCEN/s_host_a/host.sh"
 find "$CONT" -name host_runs -delete
 RUNNER_ARGS=(--keep --only s_host_a)
 check "lv21 A안 host.sh 시나리오 -> 통과" 0 MOCK_MODE=normal
+# lt4: A안에서는 지연 줄을 내지 않는다
+if grep -qF "지연:" "$OUT"; then echo "  FAIL  lt4 A안인데 지연 줄이 나옴"; failures=$((failures + 1)); else echo "  PASS  lt4 A안은 지연 줄이 없음"; fi
 # 보관된 작업 폴더 (--keep)
 kept="$(sed -n 's/^로그 보관: //p' "$OUT")"
 n="$(count_host_runs)"

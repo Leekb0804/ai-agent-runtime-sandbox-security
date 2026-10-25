@@ -42,6 +42,7 @@
 #
 # ===== 종료 코드 =====
 #   0 : 전부 통과      1 : 하나 이상 실패      2 : 환경 문제로 시작하지 못함 (사전 점검 실패 등)
+#   130 / 143 : INT(Ctrl-C) / TERM 으로 멈춤 (timeout 으로 감싼 단계 중이면 그 단계가 끝난 뒤 정리하고 끝난다)
 #   "시작하지 못함(2)"과 "테스트가 실패함(1)"을 구분해서, 환경이 틀려서 아무것도 안 돌았는데
 #   성공처럼 보이는 일을 막는다.
 #
@@ -102,6 +103,10 @@ LIVE_SID=""               # agent.out 에서 뽑은 세션 ID (cgroup 이름의 
 LIVE_CGID=""              # agent.out 에서 뽑은 cgroup_id (cgroup.kill 을 쓰기 전에 inode 와 비교한다)
 LIVE_RC=""                # B안에서 받은 agent-run 의 종료 코드
 LIVE_LEFT=""              # 정리 뒤에도 agent-run 이 남았으면 그 세션 cgroup 이름 (mycontainer-N, 모르면 "<모름>")
+LIVE_T0=""                # 지연 측정: host.sh 실행 직전의 벽시계 (epoch ms)
+LIVE_T1=""                # 지연 측정: agent-run 이 없어진 것을 처음 확인한 벽시계 (epoch ms)
+# B안 지연 내역을 계산하고 요약하는 도구 (판정에는 쓰지 않는다)
+LATENCY_TOOL="$HERE/tools/live_latency.sh"
 # 러너 전용 로더에 켤 탐지기. 로더는 --detectors 가 없으면 더미(시험용)를 켜지 않는다.
 # s99, s03 은 dummy_block 의 BLOCK 에, s99 의 마지막 기대는 dummy_suspect 의 판정에 의존한다. 이 목록은 여기서만 정한다.
 # 일부러 알파벳순이 아닌 순서로 둔다. ready 줄은 로더가 정렬해서 내므로, 아래 want_dets 의 정렬이 빠지면 테스트(ld1)가 잡는다.
@@ -573,6 +578,40 @@ print_judge() {
     done
 }
 
+# 지금 벽시계를 epoch 밀리초로 출력한다. bash 5 이상이면 EPOCHREALTIME(마이크로초까지), 아니면 date +%s%N 을 쓴다
+now_ms() {
+    # 마이크로초 문자열 (EPOCHREALTIME 의 소수점은 로캘에 따라 . 이나 , 이므로 숫자만 남긴다)
+    local us
+    if [[ -n "${EPOCHREALTIME:-}" ]]; then
+        # 초와 마이크로초를 이어 붙인 정수
+        us="${EPOCHREALTIME//[!0-9]/}"
+        # 밀리초로 바꾼다
+        echo $((us / 1000))
+    else
+        # 나노초를 밀리초로 바꾼다
+        echo $(( $(date +%s%N) / 1000000 ))
+    fi
+}
+
+# B안 시나리오의 지연 한 줄을 출력하고, 반복 모드이면 작업 폴더의 latency.tsv 에 한 줄 남긴다. 판정에는 영향이 없다.
+#   $1 세션 폴더  $2 시나리오 이름
+live_latency_report() {
+    # 전체와 세 구간
+    local parts total a b c
+    # 측정값이 없으면 (B안 FAIL 경로) 아무것도 하지 않는다
+    [[ -n "$LIVE_T0" && -n "$LIVE_T1" ]] || return 0
+    # 로그에서 내역을 계산한다 (도구가 없거나 실패해도 판정과 무관하게 넘어간다)
+    parts="$("$LATENCY_TOOL" parts "$1" "$LIVE_T0" "$LIVE_T1" 2>/dev/null)"
+    # 탭으로 나눈다
+    IFS=$'\t' read -r total a b c <<<"$parts"
+    # 한 줄로 알린다 (결과 줄 아래)
+    echo "        지연: 전체 ${total:-n/a} ms (실행→HIT ${a:-n/a}, HIT→kill 요청 ${b:-n/a}, kill 요청→종료 ${c:-n/a})"
+    # 반복 모드이면 라운드마다 한 줄씩 남긴다 (라운드, 이름, 전체, 세 구간)
+    if [[ -n "$REPEAT" ]]; then
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${round:-?}" "$2" "${total:-n/a}" "${a:-n/a}" "${b:-n/a}" "${c:-n/a}" >>"$WORK/latency.tsv"
+    fi
+}
+
 # ---------------------------------------------------------------------------------------------
 # B안(live.json) 정리. 백그라운드 agent-run 이 남아 있으면 세션 cgroup 에 cgroup.kill 을 써서 끝내고 기다린다.
 # 세션 cgroup 의 inode 가 agent.out 에서 뽑은 cgroup_id 와 같을 때만 쓴다 (이름이 같은 다른 cgroup 을 죽이지 않으려는 것이다).
@@ -669,6 +708,8 @@ run_live() {
     : >"$ref"
     # 지난 B안 실행의 상태를 비운다
     LIVE_RC=""
+    LIVE_T0=""
+    LIVE_T1=""
     LIVE_SID=""
     LIVE_CGID=""
     # A안과 같은 줄을 백그라운드(&)로 실행한다 (timeout, 환경변수, 출력 파일 그대로)
@@ -721,6 +762,8 @@ run_live() {
         live_fail_cleanup "$name"
         return 1
     fi
+    # 지연 측정의 시작: host.sh 를 실행하기 직전
+    LIVE_T0="$(now_ms)"
     # 준비되었다. 컨테이너가 살아 있는 동안 host.sh 를 실행한다 (짧은 timeout, 출력은 시나리오별 파일)
     MYC_UPPER="$cdir/upper" timeout "$LIVE_HOST_TIMEOUT_S" /bin/bash "$dir/host.sh" >"$WORK/$name.host.out" 2>&1
     # 종료 코드를 바로 저장한다
@@ -735,11 +778,12 @@ run_live() {
         return 1
     fi
     # BLOCK 으로 세션이 종료되어 agent-run 이 끝나기를 최대 LIVE_EXIT_TIMEOUT_S 초 기다린다
-    for ((i = 0; i < LIVE_EXIT_TIMEOUT_S * 10; i++)); do
-        # 끝났으면 빠져나간다
-        kill -0 "$LIVE_PID" 2>/dev/null || break
-        # 0.1초 쉬고 다시 본다
-        sleep 0.1
+    # 지연을 재려고 0.02초 간격으로 본다 (그래서 횟수는 초 x 50)
+    for ((i = 0; i < LIVE_EXIT_TIMEOUT_S * 50; i++)); do
+        # 끝났으면 그 순간을 지연 측정의 끝으로 기록하고 빠져나간다
+        kill -0 "$LIVE_PID" 2>/dev/null || { LIVE_T1="$(now_ms)"; break; }
+        # 0.02초 쉬고 다시 본다
+        sleep 0.02
     done
     # 아직 살아 있으면 실패하고 정리한다
     if kill -0 "$LIVE_PID" 2>/dev/null; then
@@ -934,12 +978,16 @@ run_one() {
     # 판정과 런타임 검사가 모두 통과해야 PASS 이다
     if [[ $jr -eq 0 && $rtr -eq 0 ]]; then
         echo "[PASS] $name   (세션 $sid, 이벤트 $nev줄, 판정/대응 $nvd줄)"
+        # B안이면 지연 한 줄 (판정에는 영향이 없다)
+        [[ $live -eq 1 ]] && live_latency_report "$sdir" "$name"
         # <<<"$out" : 변수 내용을 print_judge 의 입력으로 넣는다 (here-string). --keep 이면 통과한 검사도 전부 보여 준다.
         [[ $KEEP -eq 1 ]] && print_judge 1 <<<"$out"
         return 0
     fi
 
     echo "[FAIL] $name   (세션 $sid, 이벤트 $nev줄, 판정/대응 $nvd줄)"
+    # B안이면 지연 한 줄 (판정에는 영향이 없다)
+    [[ $live -eq 1 ]] && live_latency_report "$sdir" "$name"
     if [[ $jr -eq 2 ]]; then
         echo "        판정기 입력 오류: $out"
     elif [[ $jr -ne 0 ]]; then
@@ -1041,6 +1089,12 @@ cleanup() {
 # trap '명령' EXIT : 이 스크립트가 어떤 이유로 끝나든 (정상 종료, exit, 오류) 마지막에 cleanup 을 실행한다.
 # 로더를 끄고 임시 폴더를 정리하는 일을 빠뜨리지 않으려는 장치이다.
 trap cleanup EXIT
+# INT(Ctrl-C) 와 TERM 을 받으면 exit 로 끝내서 위의 EXIT 트랩(정리)이 돌게 한다.
+# trap 이 없으면 bash 는 timeout 으로 감싼 단계(timeout 이 자기 프로세스 그룹을 따로 만들어 INT 가 닿지 않는다) 중의 INT 를
+# "자식이 INT 로 죽지 않았다"며 버리고 계속 돈다. trap 이 있으면 그 단계가 끝나는 즉시 이 exit 가 실행된다.
+# timeout --foreground 는 쓰지 않는다 (컨테이너를 중간에 죽여 반쯤 정리된 상태가 남을 수 있다)
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # 러너 전용 로더를 띄운다. 세션 루트를 인자로 넘겨서 개발용 로그 폴더와 분리한다.
 # 명령 끝의 & : 백그라운드로 실행한다 (끝나기를 기다리지 않고 다음 줄로 넘어간다). 로더는 계속 떠 있어야 하기 때문이다.
@@ -1256,6 +1310,11 @@ if ((${#failed_names[@]} > 0)); then
     echo "실패: ${failed_names[*]}"
 fi
 [[ $infra_fail -eq 1 ]] && echo "인프라 검증 실패"
+# 반복 모드에서 B안 지연을 남겼으면 열마다 요약한다 (판정에는 영향이 없다)
+if [[ -f "$WORK/latency.tsv" ]]; then
+    echo
+    "$LATENCY_TOOL" summary "$WORK/latency.tsv"
+fi
 
 # 반복 모드이고 끝까지 돌았으면 누수 비교를 한다. 0 합격, 1 누수나 기준 위반, 2 판정 불가
 leak_rc=0

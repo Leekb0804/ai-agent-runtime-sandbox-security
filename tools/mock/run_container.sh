@@ -28,6 +28,8 @@
 #   MOCK_LIVE_INODE=wrong    : 출력하는 cgroup_id 를 실제 inode 와 다르게 한다 (러너가 cgroup.kill 을 쓰지 않아야 한다)
 #   MOCK_LIVE_MAX_S=N        : 가짜 세션의 최대 수명(초, 기본 45). 넘으면 종료 코드 99 로 끝난다
 #   MOCK_LIVE_RECORD=<파일>  : 받은 신호를 한 줄씩 적는다 ("cgroup.kill 받음", "mock_kill 받음", nokill 이면 끝에 " (무시)")
+#   MOCK_LIVE_DELAY_MS=N     : 신호를 받은 뒤 N 밀리초 더 살아 있다가 끝난다 (러너의 지연 측정 시험용, 기본 0)
+#   MOCK_LIVE_TIMES=<파일>   : 끝나기 직전의 벽시계(epoch ms)를 "exit <ms>" 한 줄로 덧붙인다 (지연 측정 시험용)
 # 런타임 검사(runtime.json) 시험용 환경변수:
 #   MOCK_CGROUP_ID=N   : "세션 시작" 줄의 cgroup_id 값 (기본 1). 숫자가 아닌 값으로 "못 뽑는" 경우를 만든다
 #   MOCK_META=missing  : killed 에서 meta.json 에 exit_code 를 쓰지 않는다.  MOCK_META=wrong : exit_code 를 0 으로 쓴다
@@ -86,8 +88,8 @@ if [[ "${MOCK_MODE:-normal}" == live ]]; then
     [[ "$var" == stale ]] && touch -d '2000-01-01 00:00:00' "$ready"
     # 진짜 agent-run 과 같은 형식의 세션 시작 줄
     echo "[*] 세션 시작: $sid (cgroup_id=$ino)"
-    # 최대 수명 (0.1초 단위 횟수)
-    max=$(( ${MOCK_LIVE_MAX_S:-45} * 10 ))
+    # 최대 수명 (0.02초 단위 횟수)
+    max=$(( ${MOCK_LIVE_MAX_S:-45} * 50 ))
     # 변형별로 준비 표시를 쓴다
     case "$var" in
         # 준비 표시 없이 끝난다 (가짜 cgroup 은 진짜 run_container.sh 처럼 지운다)
@@ -99,7 +101,7 @@ if [[ "${MOCK_MODE:-normal}" == live ]]; then
         # ok, nokill: 잠시 뒤 준비 표시를 쓴다
         *) sleep 0.3; touch "$ready" ;;
     esac
-    # 종료 신호를 0.1초마다 최대 수명까지 기다린다
+    # 종료 신호를 0.02초마다 최대 수명까지 기다린다 (러너의 지연 측정 시험이 이 간격만큼의 오차를 갖는다)
     got=0
     for ((i = 0; i < max; i++)); do
         # 러너의 정리가 cgroup.kill 에 1 을 썼는가
@@ -114,7 +116,7 @@ if [[ "${MOCK_MODE:-normal}" == live ]]; then
                 # 기록 파일이 있으면 적는다
                 [[ -n "${MOCK_LIVE_RECORD:-}" ]] && echo "$got (무시)" >>"$MOCK_LIVE_RECORD"
                 # 다시 적지 않도록 남은 수명 동안 그냥 기다린다
-                sleep "$(( (max - i) / 10 ))"
+                sleep "$(( (max - i) / 50 ))"
                 # 최대 수명이 지났다
                 exit 99
             fi
@@ -122,11 +124,14 @@ if [[ "${MOCK_MODE:-normal}" == live ]]; then
             [[ -n "${MOCK_LIVE_RECORD:-}" ]] && echo "$got" >>"$MOCK_LIVE_RECORD"
             break
         fi
-        # 0.1초 쉬고 다시 본다
-        sleep 0.1
+        # 0.02초 쉬고 다시 본다
+        sleep 0.02
     done
     # 최대 수명 동안 신호가 없었다
     [[ "$got" == 0 ]] && exit 99
+    # 지연 시험이면 신호 뒤에 정해진 시간만큼 더 산다 (밀리초를 sleep 의 초 단위 소수로 바꾼다)
+    delay="${MOCK_LIVE_DELAY_MS:-0}"
+    ((delay > 0)) && sleep "$(printf '%d.%03d' $((delay / 1000)) $((delay % 1000)))"
     # 스크립트에 trigger 가 있으면 s99 의 실제 로그, 아니면 s00 의 실제 로그를 쓴다 (다른 모드와 같은 규칙)
     if [[ "$script" == *trigger* ]]; then src="$FIX/real_s99_dummy_block"; else src="$FIX/real_s00_benign"; fi
     # 세션 폴더
@@ -144,6 +149,8 @@ if [[ "${MOCK_MODE:-normal}" == live ]]; then
     rm -f "$cg/cgroup.kill"
     # 빈 디렉터리를 지운다
     rmdir "$cg"
+    # 지연 시험이면 끝나기 직전의 벽시계를 남긴다 (EPOCHREALTIME 의 숫자만 남겨 마이크로초 정수로 만든 뒤 밀리초로)
+    if [[ -n "${MOCK_LIVE_TIMES:-}" ]]; then us="${EPOCHREALTIME//[!0-9]/}"; echo "exit $((us / 1000))" >>"$MOCK_LIVE_TIMES"; fi
     # cgroup.kill 로 죽은 세션의 종료 코드
     exit 137
 fi

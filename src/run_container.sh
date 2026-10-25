@@ -133,11 +133,23 @@ cleanup_session() {
 
     # meta.json 은 있을 때만 갱신한다 (없는데 jq 가 실패하고 tee 만 성공하면 빈 meta.json 이 생긴다)
     if [[ "$MODE" == "agent" && -n "$SESSION_DIR" && -f "$SESSION_DIR/meta.json" ]]; then
-        jq --arg end "$(date -Is)" --argjson rc "$RC" \
-           '. + {ended_at:$end, exit_code:$rc}' "$SESSION_DIR/meta.json" \
-          | sudo tee "$SESSION_DIR/meta.json.tmp" > /dev/null
-        # 바꿔 넣기가 실패해도 정리를 멈추지 않고 RC 로 끝낸다
-        sudo mv "$SESSION_DIR/meta.json.tmp" "$SESSION_DIR/meta.json" || echo "[!] meta.json 갱신 실패: $SESSION_DIR/meta.json (계속 진행)"
+        # jq 의 결과를 변수에 먼저 받는다. 파이프로 바로 쓰면 pipefail 이 없어서 jq 가 실패해도 tee 가 빈 임시 파일을 만들고 그것이 meta.json 을 덮어쓴다
+        # if 조건 안이라 jq 가 실패해도 set -e 로 끝나지 않는다. jq 의 오류 메시지는 숨기지 않고 그대로 화면에 낸다
+        local new_meta
+        if new_meta="$(jq --arg end "$(date -Is)" --argjson rc "$RC" \
+               '. + {ended_at:$end, exit_code:$rc}' "$SESSION_DIR/meta.json")" && [[ -n "$new_meta" ]]; then
+            # 새 내용을 임시 파일에 쓰고, 쓰기가 성공했을 때만 바꿔 넣는다 (파이프 대신 here-string)
+            if sudo tee "$SESSION_DIR/meta.json.tmp" > /dev/null <<< "$new_meta"; then
+                # 바꿔 넣기가 실패해도 정리를 멈추지 않고 RC 로 끝낸다
+                sudo mv "$SESSION_DIR/meta.json.tmp" "$SESSION_DIR/meta.json" || echo "[!] meta.json 갱신 실패 (이동): $SESSION_DIR/meta.json (계속 진행)"
+            else
+                # 임시 파일을 쓰지 못했다. meta.json 은 그대로 둔다
+                echo "[!] meta.json 갱신 실패 (쓰기): $SESSION_DIR/meta.json.tmp (계속 진행)"
+            fi
+        else
+            # jq 가 실패했거나 출력이 비었다. meta.json 은 손대지 않는다 (exit_code 가 기록되지 않은 채로 남는다)
+            echo "[!] meta.json 갱신 실패 (jq): $SESSION_DIR/meta.json 을 그대로 둠 (계속 진행)"
+        fi
     fi
 
     exit "$RC"

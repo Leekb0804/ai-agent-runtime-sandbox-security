@@ -33,6 +33,11 @@
 #include "session_log.h"
 #include "jsonl.h"
 
+/*
+ * 로더는 세션이 끝난 것을 알 수 없어서(session_log.h 의 session_log_close_all 설명) 칸은 밀려날 때(LRU)와
+ * 로더 종료 때만 닫힌다. 그래서 로그 FD 는 최대 2 x MAX_SESSIONS 개(events, verdicts)까지 열려 있다.
+ * tools/leak_check.sh 의 SESSION_SLOTS 와 같은 값이어야 한다 (누수 점검의 FD 판정이 이 값을 쓴다).
+ */
 #define MAX_SESSIONS 64                    /* 동시에 열어 둘 세션 수 */
 #define SLOW_WRITE_NS 5000000ULL           /* 5ms */
 

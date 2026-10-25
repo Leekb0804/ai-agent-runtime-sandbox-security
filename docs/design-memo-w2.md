@@ -1,6 +1,6 @@
 # v0.1 2주차 설계 메모 (w2d3 최종본)
 
-상태: **w2 최종본.** [확인필요] 항목은 3주차에 확인한다. 표기: [VM확인] 사용자 VM 출력으로 확인된 것 / [계획서] 계획서와 2주차 상세 계획 / [추론] Claude(채팅)의 판단 / [확인필요] 실험으로 검증할 것. Claude(채팅)는 소스 전체를 보지 못했고, 본 파일은 `watcher.bpf.c`, `event.h`, `dispatcher.c`, `detector.h`, `jsonl.c`, `loader.c`, `build.sh`, `dummy_block.c`, `verdict_handler.c`, `test_dispatcher.c`, `run_scenarios.sh`(일부), `tools/judge.sh`(일부), `tools/test_runner.sh`, `tools/mock/run_container.sh`와 grep 일부만 확인했다.
+상태: **w2 최종본.** w3 갱신(2026-10-25) 있음, 마지막 절 참고. [확인필요] 항목은 3주차에 확인한다. 표기: [VM확인] 사용자 VM 출력으로 확인된 것 / [계획서] 계획서와 2주차 상세 계획 / [추론] Claude(채팅)의 판단 / [확인필요] 실험으로 검증할 것. Claude(채팅)는 소스 전체를 보지 못했고, 본 파일은 `watcher.bpf.c`, `event.h`, `dispatcher.c`, `detector.h`, `jsonl.c`, `loader.c`, `build.sh`, `dummy_block.c`, `verdict_handler.c`, `test_dispatcher.c`, `run_scenarios.sh`(일부), `tools/judge.sh`(일부), `tools/test_runner.sh`, `tools/mock/run_container.sh`와 grep 일부만 확인했다.
 
 ## 1. 결정 요약
 
@@ -13,7 +13,7 @@
 | 4 | 맵과 만료 | LRU_HASH 10240, 파일당 항목 2개라 실효 약 5000파일. 10분 만료는 **커널이 아니라 `write_exec_boundary` 탐지기가 `ts_ns - tag_ts_ns`로 판단**하고, 만료되면 세션 밖 실행도 SUSPECT로 내린다 (사용자 결정). 밀려난 횟수 측정은 3주차 | 탐지기 구현 [VM확인] (4efc399). 맵 밀려남은 [확인필요] |
 | 5 | exec 필터 | 기존 `on_execve`(세션 cgroup만 통과)는 그대로 두고, 세션 필터가 없는 `on_bprm_check`를 추가. 맵 미스면 바로 반환, 히트 때만 emit | 구현 [VM확인] (1ed42e0) |
 | 6 | 더미 탐지기 | 유지. 둘 다 `KIND_BIT(EVT_EXEC)`만 구독해 `TAG_HIT`을 받지 않음. 단 `s99`가 `dummy_block`의 BLOCK에 의존하므로 테스트 전용으로 분리하지 않았다 | [VM확인]. 분리는 3주차에 검토 |
-| 7 | `host.sh` 지원 | **A안**: `agent-run`이 끝난 뒤 러너가 컨테이너의 upperdir(`MYC_UPPER`)를 주고 호스트에서 `host.sh`를 실행한다 (3.5절). B안(컨테이너가 살아 있는 동안 실행하고 안팎을 동기화)은 3주차 실제 kill 검증에 필요 | 구현 [VM확인] (64f64e7). 러너가 세션 cgroup 밖이라는 가정은 `s01`의 BLOCK으로 확인됨 |
+| 7 | `host.sh` 지원 | **A안**: `agent-run`이 끝난 뒤 러너가 컨테이너의 upperdir(`MYC_UPPER`)를 주고 호스트에서 `host.sh`를 실행한다 (3.5절). B안(컨테이너가 살아 있는 동안 실행하고 안팎을 동기화)은 3주차 실제 kill 검증에 필요 | 구현 [VM확인] (64f64e7). 러너가 세션 cgroup 밖이라는 가정은 `s01`의 BLOCK으로 확인됨. B안 구현됨 [VM확인]: `run_scenarios.sh`의 `run_live`, `live.json` `{"ready": "tmp/myc_ready"}`, 시나리오 `s04`, 150/150 통과. 상수: `LIVE_READY_TIMEOUT_S=15`, `LIVE_EXIT_TIMEOUT_S=30`, `LIVE_HOST_TIMEOUT_S=10`, `LIVE_CLEANUP_WAIT_S=10`, `AGENT_TIMEOUT_S=60` (준비와 종료 마감의 합이 60 미만이어야 하며 사전 점검이 확인) |
 | 9 | 경로 비교를 미룰 기준 | 경로 비교 탐지기(resolved 경로 vs 요청 이름)는 유지하되 3단계 조건으로 시작 여부를 거른다 (7절) | 정함 (w2d3, 사용자 확정) |
 | - | 미스 경로 성능 | 호스트 전체 exec에 걸리는 훅이며 첫 줄에서 맵 조회만 한다. 측정은 3주차 부하 시험에서 (제안) | 미측정 |
 | - | BLOCK 의 대응 대상 | 열린 설계 질문 (8절). 쓴 세션 종료, 실행한 프로세스 종료, 실행 자체 거부, 동결, kill 을 설정으로 | 미정, 3주차 오탐 측정 뒤 결정 |
@@ -55,7 +55,7 @@
 
 경과 시간은 `ts_ns - tag_ts_ns`(같은 단조 시계)이고, 정확히 10분까지는 유효, 1ns라도 넘으면 만료다. reason에는 경과 시간과 경로를 넣고 128바이트에서 자른다(`세션 밖 실행, 쓴 지 25.945초: <경로>`). 시계 이상으로 태그 시각이 이벤트 시각보다 뒤이면 경과를 0으로 본다.
 
-판정은 exec 이후에 나오는 사후 판정이다. BLOCK이면 `verdict_handler`가 헤더 `cgroup_id`(쓴 세션)로 세션을 찾아 기록하고 세션당 한 번 `kill_session`을 요청한다. 지금은 스텁이라 `would_kill`만 기록한다. `kill_session`은 세션 cgroup 안의 프로세스만 끊으므로 세션 밖에서 일어난 실행 자체는 멈추지 못한다. 탐지기는 실행한 쪽이 누구인지 구분하지 못하고 cgroup이 다르다는 것만 본다.
+판정은 exec 이후에 나오는 사후 판정이다. BLOCK이면 `verdict_handler`가 헤더 `cgroup_id`(쓴 세션)로 세션을 찾아 기록하고 세션당 한 번 `kill_session`을 요청한다. 지금은 스텁이라 `would_kill`만 기록한다 (3주차에 실제 구현: cgroup.kill 로 세션 cgroup 종료, 결과는 sent/already_gone/failed/skipped 로 기록). `kill_session`은 세션 cgroup 안의 프로세스만 끊으므로 세션 밖에서 일어난 실행 자체는 멈추지 못한다. 탐지기는 실행한 쪽이 누구인지 구분하지 못하고 cgroup이 다르다는 것만 본다.
 
 ### 3.4 탐지기 작성 규칙 (기존 한계 항목의 반영처)
 - 태깅과 구분의 키는 pid가 아니라 `(s_dev, i_ino)`다. exec는 pid를 유지하므로 같은 pid에서 다른 프로그램의 이벤트가 이어진다.
@@ -143,3 +143,14 @@ open 시점의 쓰기 모드만 태깅하므로 rename, hardlink, mmap 쓰기, �
 사실 [VM확인]: `/sys/kernel/security/lsm` 은 `lockdown,capability,landlock,yama,apparmor,ima,evm` 이고 bpf 가 없다. BPF LSM 으로 커널 안 거부를 하려면 부팅 인자(`lsm=`)에 bpf 를 추가해야 할 것으로 보이며(일반 지식), 이 커널이 CONFIG_BPF_LSM 으로 빌드됐는지는 확인하지 않았다.
 
 결정 방침: v0.1 은 쓴 세션 종료로 가고, 3주차 오탐 측정에 "호스트에서 에이전트 결과물을 직접 실행하는 정상 시나리오"를 넣어 BLOCK 이 얼마나 나는지 센다. 측정 뒤 대응 대상을 정한다. README 한계 섹션에는 BLOCK 이 책임 판정이 아니라 격리이며 정상 사용에서도 발생할 수 있다는 점을 명시한다. 한계 목록에는 올리지 않는다 (열린 질문이다).
+
+## 9. 3주차 갱신 (2026-10-25)
+
+- **결정 9 상태** (7절):
+  - 조건 1 충족 [VM확인]: 세션이 살아 있는 동안 BLOCK 이 나면 세션이 실제로 종료되고 정리된다 (`s03_kill_live_session`, `s04_write_exec_live`).
+  - 조건 2 부분 충족 [VM확인]: [`false-positive-table.md`](false-positive-table.md) 의 BLOCK/SUSPECT 는 n01 0/1, n03 0/2, n04 0/1, n05 0/1, n06 1/0(알려진 오탐). n02 는 개발 rootfs 에 nodejs/npm 을 설치할 수 없어 보류했다.
+  - 일정표 규칙대로 경로 비교 탐지기는 4주차에 진행한다.
+  - w3d2 에 조정, 이유: 3주차가 약 9일 늦음, 날짜는 잡지 않고 주차별 목록으로 관리.
+- **시나리오 현황 12개**: `s00`~`s05`, `s99`, `n01`, `n03`, `n04`, `n05`, `n06`. 전체 실행 12/12 통과 (10-25) [VM확인].
+- **8절(BLOCK 대응 대상)의 근거**: `n06` 은 탐지기 수준에서 `s04` 와 관찰상 같다 (sent 와 already_gone 차이만). 즉 정상 사용(호스트가 결과물을 직접 실행)과 공격을 탐지기가 구분하지 못한다는 것이 실측으로 확인됐다 [VM확인]. 탐지기 규칙은 n 시리즈 동안 바꾸지 않았다 (git log 로 확인). 대응 대상 결정은 여전히 열려 있다.
+- **오탐 집계표**: 4주차에 두 탐지기를 함께 켠 기준으로 다시 만든다.

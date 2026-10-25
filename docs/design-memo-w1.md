@@ -29,7 +29,7 @@ AI 코딩 에이전트가 도는 컨테이너(세션)를 커널(eBPF)에서 관�
    ▼
    탐지기들             on_event(이벤트) -> 판정 없음 / SUSPECT / BLOCK
    ▼
-   handle_verdict       verdicts.jsonl 에 기록 -> BLOCK 이면 kill_session (세션당 한 번, 지금은 스텁)
+   handle_verdict       verdicts.jsonl 에 기록 -> BLOCK 이면 kill_session (세션당 한 번, cgroup.kill 로 세션 cgroup 의 모든 프로세스에 SIGKILL. 구현됨, 3주차)
 ```
 
 판정은 전부 에이전트 바깥(로더와 커널)에서 일어난다. 에이전트의 출력이 판정에 영향을 줄 경로가 없다.
@@ -46,7 +46,7 @@ AI 코딩 에이전트가 도는 컨테이너(세션)를 커널(eBPF)에서 관�
 | 탐지기 | `src/loader/detectors/*.c` | 판단 함수. 파일을 넣으면 스스로 등록 (`constructor`) |
 | 판정 수집기 | `src/loader/verdict_handler.*` | 기록 후 대응. 모든 판정이 거치는 단 하나의 지점 |
 | 세션 로그 | `src/loader/session_log.*`, `jsonl.*` | cgroup id -> 세션 변환, 세션별 파일 기록, JSON 한 줄 생성 |
-| kill switch | `src/loader/kill.*` | 인터페이스 확정. 지금은 `would_kill` 만 기록하는 스텁 (w3d2 에서 실제 kill 로 대체됨) |
+| kill switch | `src/loader/kill.*` | 인터페이스 확정. cgroup.kill 로 세션 cgroup 의 모든 프로세스에 SIGKILL (구현됨, 3주차). 1주차에는 `would_kill` 만 기록하는 스텁이었다 |
 | 시나리오 러너 | `run_scenarios.sh`, `scenarios/`, `tools/` | 시나리오를 실제로 돌려 세션 로그를 기대값과 비교 |
 
 ## 4. 핵심 인터페이스
@@ -142,6 +142,7 @@ scenarios/<이름>/expect.json   기대하는 세션 로그
 [`week1-notes.md`](week1-notes.md) 가 원본이다. 이 문서에 특히 영향을 주는 것만 옮긴다.
 
 - 사후 차단이다 (exec 이후에 판정). 세션 밖에서 이미 실행된 프로세스는 종료 대상이 아니다.
+  - 지연 (3주차): 러너 외부 측정(s04, 10회) 기준 총 101/102/104 ms(최소/중앙/최대). 이 중 약 100 ms 는 호스트 스텝을 감싼 timeout 명령 자체의 지연으로 보여 상한값이다 [추론: 개발 머신의 uutils timeout 0.8.0 에서 바로 끝나는 명령도 약 103 ms 뒤에 반환함을 확인, VM 에서는 미확인]. 로그상 실행→HIT 1/1/3 ms, HIT→kill 요청 0/0/0 ms (커밋 253de48 의 기록). 탐지가 exec 이후이므로 이 이상의 정밀도는 결론을 바꾸지 않는다. ts_detect/ts_kill_done 로그 필드는 추가하지 않기로 했다.
 - busybox 내장 명령은 execve 가 없어 커널에서 관측할 수 없다.
 - 탐지기가 세그폴트를 내면 로더 전체가 죽는다 (프로세스 분리는 v0.1 범위 밖).
 - 탐지기가 연속 오류로 꺼지거나 등록에 실패하면 조용히 빠진다 (fail-open). kill switch 설계 때 정책을 정한다.
@@ -168,3 +169,15 @@ scenarios/<이름>/expect.json   기대하는 세션 로그
 1. 위 표의 위협 모델과 후킹 지점을 확정하고 설계 메모를 갱신한다.
 2. `event.h` 에 `EVT_TAG_HIT` payload(태그 소유 cgroup, 태그 시각, 실행자 cgroup, 경로) 초안을 추가한다 (기존 필드는 건드리지 않는다).
 3. 시나리오 s01(에이전트가 쓴 마커 파일을 바깥 프로세스가 실행)의 `host.sh` 형식을 정한다.
+
+## 10. 3주차 갱신 (2026-10-25)
+
+1주차에 스텁이던 kill switch 가 3주차에 실제 종료로 바뀌었다. 아래는 그에 따라 정해진 것과 남은 것이다.
+
+- **kill 대상 범위**: 세션 cgroup 안의 모든 프로세스다. 자식, 손자, TERM 을 무시하는 프로세스, 컨테이너 PID 1 을 포함한다 (`s05_kill_term_ignoring_tree` 로 검증 [VM확인]). 세션 밖에서 일어난 실행 자체와 세션 밖 프로세스는 종료하지 않는다. BLOCK 은 책임 판정이 아니라 격리다.
+- **정리 순서**: cgroup.kill 요청 → 종료 대기 → 자원 확인(cgroup 소멸, 감시 맵 항목, 누수 점검). 러너가 직접 정리할 때(B안 실패, 신호)는 세션 cgroup 의 inode 가 agent.out 의 cgroup_id 와 같을 때만 cgroup.kill 에 쓴다 (`run_scenarios.sh` 의 `live_cleanup`).
+- **세션 로그 FD 상한**: 세션당 FD 2개(events, verdicts), `MAX_SESSIONS` 64 (`src/loader/session_log.c`). 누수 점검 기준으로 고정분 17, 상한 149(고정분 + `MYC_LEAK_FD_EXTRA` 기본 132). 로그 FD 를 세션 끝에 닫지 않는 것은 의도한 설계다. 로더는 세션 종료를 알 수 없고, 끝난 세션에 늦게 오는 TAG_HIT 도 같은 세션 로그로 가야 한다 (s01). FD 가 늘어나는 누수는 세션 64개를 넘는 실행(`--repeat 150` 등)에서만 잡힌다 (`tools/leak_check.sh` 의 `loader_fd_late`).
+- **알려진 미해결**:
+  - 시간 초과(60 s) 경로는 에이전트를 죽이지 않고 자원도 정리하지 않는다.
+  - 러너나 외부에서 cgroup.kill 로 끝낸 경로는 감시 맵 항목을 남긴다.
+  - 둘 다 4주차 앞쪽에서 고칠 예정이다: run_container.sh 가 TERM 을 받으면 cgroup.kill 뒤 기존 정리를 이어 가고, 정리 단계에서 cgroup id 로 맵 항목을 지운다. [`week1-notes.md`](week1-notes.md) 의 "cgroup id가 재사용되는지 확인하지 않음" 항목과 "러너의 시간 초과(60초) 경로" 항목에 연결된다.

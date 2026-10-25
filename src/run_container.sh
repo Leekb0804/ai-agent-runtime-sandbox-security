@@ -19,6 +19,10 @@ MODE="run"
 SESSION_ID=""
 SESSION_DIR=""
 CGROUP_ID=""
+# 정리 단계가 부분 생성 상태를 구분하는 데 쓴다. NETNS_NAME 은 netns 를 만들기 직전에 정해진다
+NETNS_NAME=""
+# mycontainer_run 을 띄웠는지 (띄우기 전에는 감시 맵에 등록될 수 없으므로 맵 삭제를 하지 않는다)
+MC_STARTED=0
 # 감시 맵의 pin 경로. mycontainer_run.c 의 SESSION_CGROUPS_PIN 과 같은 값이어야 한다 (mycontainer_run 이 이 맵에 세션 cgroup 을 등록한다)
 SESSION_CGROUPS_PIN="/sys/fs/bpf/session_cgroups"
 
@@ -75,11 +79,18 @@ unwatch_session_cgroup() {
     esac
 }
 
-# 세션 정리 단계. mycontainer_run 이 돌아온 뒤 정상 경로가 부르고, 마지막에 mycontainer_run 의 종료 코드(RC)로 끝낸다.
+# 세션 정리 단계. mycontainer_run 이 돌아온 뒤 정상 경로가 부르고, TERM/INT 처리기(on_signal)도 부른다. 마지막에 RC 로 끝낸다.
 # 순서: 감시 맵 항목 삭제 -> cgroup rmdir 재시도 -> netns 삭제 -> (agent 모드) meta.json 갱신 -> exit "$RC"
 # 맵 삭제는 반드시 rmdir 전에 한다. rmdir 뒤에는 cgroup id 가 다른 세션에 재사용될 수 있어 그 id 로 지우면 남의 감시가 풀린다.
+# 설정 단계 도중(부분 생성 상태)에 불릴 수 있으므로 있는 자원만 정리한다. set -e 가 살아 있으니 실패할 수 있는 명령은 if 나 || 안에서 부른다.
 cleanup_session() {
-    unwatch_session_cgroup
+    # 정리 중에 TERM/INT 가 또 와서 정리가 두 번 돌지 않게 무시로 바꾼다 (정상 경로도 같다)
+    trap '' TERM INT
+
+    # mycontainer_run 을 띄운 뒤에만 맵 항목이 있을 수 있다 (그 전이면 지울 것도, 알릴 것도 없다)
+    if [[ $MC_STARTED -eq 1 ]]; then
+        unwatch_session_cgroup
+    fi
 
     # cgroup 디렉토리 정리는 짧게 다시 시도한다.
     # kill(cgroup.kill) 직후에는 mycontainer_run 이 먼저 죽어서 여기로 돌아왔는데도 cgroup 안의 다른 프로세스가
@@ -92,36 +103,62 @@ cleanup_session() {
     rmdir_err=""
     # 지웠는지 표시
     rmdir_ok=0
-    # 1번째부터 RMDIR_TRIES 번째까지 시도한다
-    for ((i = 1; i <= RMDIR_TRIES; i++)); do
-        # if 조건 안이라 실패해도 set -e 로 끝나지 않는다. 오류 출력은 변수에 받아 둔다
-        if rmdir_err="$(sudo rmdir "$CGROUP_PATH" 2>&1)"; then
-            # 성공하면 즉시 빠져나온다
-            rmdir_ok=1
-            break
+    # cgroup 디렉토리가 없으면(만들기 전이나 만드는 도중에 신호가 왔으면) 재시도와 경고를 건너뛴다
+    if [[ -d "$CGROUP_PATH" ]]; then
+        # 1번째부터 RMDIR_TRIES 번째까지 시도한다
+        for ((i = 1; i <= RMDIR_TRIES; i++)); do
+            # if 조건 안이라 실패해도 set -e 로 끝나지 않는다. 오류 출력은 변수에 받아 둔다
+            if rmdir_err="$(sudo rmdir "$CGROUP_PATH" 2>&1)"; then
+                # 성공하면 즉시 빠져나온다
+                rmdir_ok=1
+                break
+            fi
+            # 마지막 시도가 아니면 잠깐 쉬고 다시 시도한다
+            if [[ $i -lt $RMDIR_TRIES ]]; then
+                sleep "$RMDIR_INTERVAL"
+            fi
+        done
+        # 끝까지 실패하면 예전처럼 경고만 내고 계속 진행한다 (종료 코드, netns 삭제, meta.json 기록은 그대로)
+        if [[ $rmdir_ok -ne 1 ]]; then
+            # 예전에는 rmdir 자신의 오류가 stderr 에 그대로 나왔으므로 마지막 오류를 같은 곳에 낸다
+            echo "$rmdir_err" >&2
+            # 경고에 시도 횟수를 덧붙인다
+            echo "[!] cgroup 정리 실패: $CGROUP_PATH (${RMDIR_TRIES}회 시도, 계속 진행)"
         fi
-        # 마지막 시도가 아니면 잠깐 쉬고 다시 시도한다
-        if [[ $i -lt $RMDIR_TRIES ]]; then
-            sleep "$RMDIR_INTERVAL"
-        fi
-    done
-    # 끝까지 실패하면 예전처럼 경고만 내고 계속 진행한다 (종료 코드, netns 삭제, meta.json 기록은 그대로)
-    if [[ $rmdir_ok -ne 1 ]]; then
-        # 예전에는 rmdir 자신의 오류가 stderr 에 그대로 나왔으므로 마지막 오류를 같은 곳에 낸다
-        echo "$rmdir_err" >&2
-        # 경고에 시도 횟수를 덧붙인다
-        echo "[!] cgroup 정리 실패: $CGROUP_PATH (${RMDIR_TRIES}회 시도, 계속 진행)"
     fi
-    sudo ip netns delete "$NETNS_NAME" || echo "[!] netns 정리 실패: $NETNS_NAME (계속 진행)"
+    # netns 이름이 정해지기 전에 신호가 왔으면 지울 netns 가 없다
+    if [[ -n "$NETNS_NAME" ]]; then
+        sudo ip netns delete "$NETNS_NAME" || echo "[!] netns 정리 실패: $NETNS_NAME (계속 진행)"
+    fi
 
-    if [[ "$MODE" == "agent" ]]; then
+    # meta.json 은 있을 때만 갱신한다 (없는데 jq 가 실패하고 tee 만 성공하면 빈 meta.json 이 생긴다)
+    if [[ "$MODE" == "agent" && -n "$SESSION_DIR" && -f "$SESSION_DIR/meta.json" ]]; then
         jq --arg end "$(date -Is)" --argjson rc "$RC" \
            '. + {ended_at:$end, exit_code:$rc}' "$SESSION_DIR/meta.json" \
           | sudo tee "$SESSION_DIR/meta.json.tmp" > /dev/null
-        sudo mv "$SESSION_DIR/meta.json.tmp" "$SESSION_DIR/meta.json"
+        # 바꿔 넣기가 실패해도 정리를 멈추지 않고 RC 로 끝낸다
+        sudo mv "$SESSION_DIR/meta.json.tmp" "$SESSION_DIR/meta.json" || echo "[!] meta.json 갱신 실패: $SESSION_DIR/meta.json (계속 진행)"
     fi
 
     exit "$RC"
+}
+
+# TERM/INT 처리기. 인자는 종료 코드(TERM 143, INT 130)이고 meta.json 의 exit_code 에도 이 값이 들어간다.
+# 시간 초과(timeout 이 프로세스 그룹에 TERM)나 Ctrl-C 에서 mycontainer_run 은 같은 신호로 죽지만 컨테이너 PID 1 은
+# PID 네임스페이스 init 이라 살아남는다. 세션 cgroup 에 cgroup.kill 을 써서 남은 프로세스를 모두 끝낸 뒤 정리 단계를 탄다.
+# 이 bash 는 세션 cgroup 밖이라 cgroup.kill 에 같이 죽지 않는다 (mycontainer_run 이 자기 자신만 합류시킨다).
+# 한계: 신호가 그룹이 아니라 이 bash 에만 오면 bash 는 전경 자식(mycontainer_run)이 끝날 때까지 이 처리기를 미룬다.
+on_signal() {
+    # 정리 중에 신호가 또 와서 처리기와 정리가 두 번 돌지 않게 무시로 바꾼다
+    trap '' TERM INT
+    # 이 세션의 종료 코드
+    RC="$1"
+    # 세션 cgroup 이 있을 때만 그 안의 프로세스를 모두 끝낸다 (실패해도 정리는 계속한다)
+    if [[ -d "$CGROUP_PATH" ]]; then
+        echo 1 | sudo tee "$CGROUP_PATH/cgroup.kill" > /dev/null || echo "[!] cgroup.kill 쓰기 실패: $CGROUP_PATH (계속 진행)"
+    fi
+    # 정리 단계 (함수 안의 exit "$RC" 로 끝난다)
+    cleanup_session
 }
 
 
@@ -186,6 +223,11 @@ echo "CPU_MAX_VALUE=$CPU_MAX_VALUE"
 CGROUP_NAME="mycontainer-$$"
 CGROUP_PATH="/sys/fs/cgroup/$CGROUP_NAME"
 
+# 첫 자원(세션 cgroup)을 만들기 직전부터 TERM/INT 를 받으면 정리한다. 이 앞(옵션, rootfs 검사)은 되돌릴 자원이 없다
+# 이 스크립트를 & 로 띄우면(러너 B안) bash 가 INT 를 무시 상태로 물려받아 아래 INT trap 은 효과가 없다
+# TERM trap 과 러너의 cgroup.kill 정리는 이 영향을 받지 않는다
+trap 'on_signal 143' TERM
+trap 'on_signal 130' INT
 sudo mkdir "$CGROUP_PATH"
 # cgroup v2 에서는 디렉토리 inode 가 cgroup id 이다. run 모드도 mycontainer_run 이 감시 맵에 등록하므로 모드와 상관없이 구한다 (정리 단계의 맵 삭제 키)
 CGROUP_ID=$(stat -c %i "$CGROUP_PATH")
@@ -247,6 +289,8 @@ sudo mkdir -p "$(dirname "$CONTAINER_DIR")"
 # --- 여기만 기존 pivot_root_container에서 mycontainer_run으로 교체 ---
 # 인자 순서: <lowerdir> <컨테이너 작업디렉토리> <cgroup 경로> <netns 이름> <실행할 프로그램...>
 set +e
+# 여기부터 감시 맵에 이 세션 항목이 있을 수 있다 (정리 단계가 맵 삭제를 한다)
+MC_STARTED=1
 ./mycontainer_run "$ROOTFS_PATH" "$CONTAINER_DIR" "$CGROUP_PATH" "$NETNS_NAME" "${CMD[@]}"
 RC=$?
 set -e

@@ -91,7 +91,7 @@
   - 확인: 기본은 종료, --no-kill 이면 would_kill 만 기록. 단위 테스트(test_kill_session, test_verdict_handler)와 mock, VM 에서 실제 로더와 컨테이너로 수동 확인 (rc=0, would_kill 세션당 한 줄)
 - [ ] **cgroup id가 재사용되는지 확인하지 않음** (`session_log.c`)
   - 이유: 재사용되면 캐시한 cgroup id → 세션 대응이 끝난 세션을 가리킬 수 있다.
-  - 비고: 재사용 여부를 확인한 결과를 이 줄에 기록. 또한 죽은 세션의 감시 맵 항목이 남는 경로가 있다 (러너 정리 경로: Ctrl-C, B안 실패, 시간 초과에서 cgroup.kill 로 종료되면 mycontainer_run 이 맵 항목을 지우기 전에 죽는다. 러너로 재현함). 해결은 4주차 앞쪽에서 run_container.sh 정리 단계에 맵 항목 삭제를 넣는 방식으로 계획.
+  - 비고: 재사용 여부를 확인한 결과를 이 줄에 기록. 죽은 세션의 감시 맵 항목이 남던 경로(외부 kill, 시간 초과, Ctrl-C 에서 mycontainer_run 이 맵 항목을 지우기 전에 죽음. 러너로 재현함)는 정리 단계의 감시 맵 항목 삭제("w4d1: run_container.sh 정리 단계에서 감시 맵 항목 삭제 (외부 kill 경로)")와 TERM/INT 처리("w4d1: run_container.sh TERM/INT 처리 - 시간 초과·Ctrl-C 경로 정리")로 남지 않게 했다. cgroup id 재사용 여부 확인은 여전히 미완.
   - 시점: w3
   - 해결: (미해결)
 - [ ] **세션 도중 로더가 죽어도 실행 중인 세션은 감시 없이 계속 돎**
@@ -128,10 +128,17 @@
   - 이유: 실패하면 session_cgroups 에 항목이 남지만 기록으로는 알 수 없다.
   - 시점: w5
   - 해결: (미해결)
-- [ ] **러너의 시간 초과(60초) 경로가 에이전트를 종료하지 못하고 격리 자원을 정리하지 않음**
+- [x] **러너의 시간 초과(60초) 경로가 에이전트를 종료하지 못하고 격리 자원을 정리하지 않음**
   - 이유: AGENT_TIMEOUT_S(60초, 상수) 로 timeout 이 run_container.sh 를 끊으면, run_container.sh 에 trap 이 없고 mycontainer_run 에 신호 처리기가 없어 정리 코드가 돌지 않는다(src/run_container.sh:143-186, src/mycontainer_run.c:566-573). 그 결과 세션 cgroup, netns, 호스트 veth, nsfs 마운트, 감시 맵 항목, state 파일이 남고 meta.json 에 exit_code 가 기록되지 않는다. VM 실측(w3d2): 컨테이너 안에서 sleep 600 을 실행하고 timeout 15 로 끊었을 때 종료 코드 124, 위 자원이 모두 남았고 점검기 compare 가 cgroup_dirs, netns, veth, mounts, procs, map_entries, state_files 일곱 행을 FAIL 로 잡았다. 에이전트 프로세스도 살아남았다: sleep 이 컨테이너 PID 1 이라 timeout 이 보낸 TERM 을 무시했다(NSpid 끝 1, 부모 init). 제품의 agent-run 자체에는 시간 초과가 없고 이 timeout 은 러너가 붙인 안전장치이므로, 영향은 시나리오가 멈췄을 때 러너가 에이전트와 격리 자원을 치우지 못하는 것이다. 한 번의 실측이며 PID 1 이 sh 인 여러 명령 스크립트에서의 동작은 확인하지 못했다.
-  - 비고: 완화 후보는 run_container.sh 가 TERM 을 받으면 세션 cgroup 에 cgroup.kill 을 쓰고 기존 정리를 이어서 타게 하는 방식이다. 이 경로에서는 로더가 맵 항목을 지우지 않으므로 별도 처리가 필요하다. 누수 점검(tools/leak_check.sh)은 이 경로를 대표 시나리오에 넣지 않았다. 러너 B안 작업과 함께 수정할 예정이라 주차는 미정.
+  - 비고: timeout 이 프로세스 그룹 전체에 TERM 을 보내 mycontainer_run 이 정리 전에 죽었고, 컨테이너 PID 1 은 TERM 을 무시해 남았다. run_container.sh 가 TERM/INT 를 받으면 세션 cgroup 에 cgroup.kill 을 쓰고 기존 정리를 이어서 타게 해서 고쳤다. 이 경로에서는 로더가 맵 항목을 지우지 않으므로 정리 단계에서 지우게 했다("w4d1: run_container.sh 정리 단계에서 감시 맵 항목 삭제 (외부 kill 경로)"). 누수 점검(tools/leak_check.sh)은 이 경로를 대표 시나리오에 넣지 않았다. 남은 한계는 아래 "TERM 이 run_container.sh 의 bash 에만 오면 정리가 미뤄짐" 항목에 적었다.
   - 시점: w4
+  - 해결: "w4d1: run_container.sh TERM/INT 처리 - 시간 초과·Ctrl-C 경로 정리"
+  - 확인: VM 에서 timeout 15 재현 시 rc=124, meta.json exit_code 143, 에이전트 프로세스 없음, 누수 점검 compare 에서 state_files 한 행만 FAIL
+  - 점검기: 점검기 범위 밖. 단 state_files +1 FAIL 은 예상된 결과(exit_code 143·130 은 kill 세션으로 세지 않음)
+- [ ] **TERM 이 run_container.sh 의 bash 에만 오면 정리가 미뤄짐**
+  - 이유: run_container.sh 는 mycontainer_run 을 전경으로 실행하고, bash 는 전경 자식이 끝날 때까지 trap 을 실행하지 않는다. timeout 처럼 프로세스 그룹 전체에 TERM 을 보내면 mycontainer_run 도 같이 죽어 trap 이 바로 돌지만, `kill -TERM <bash pid>` 처럼 bash 에만 보내면 mycontainer_run 이 끝날 때까지(에이전트가 끝나지 않으면 무기한) 정리가 미뤄진다.
+  - 비고: 코드와 별도 bash 실험(전경 자식이 TERM 을 무시하면 trap 이 3초 뒤에 실행됨)으로 확인했고, VM 에서 실제 run_container.sh 로는 확인하지 않았다. 수동 정리는 세션 cgroup 의 cgroup.kill 에 1 을 쓰는 것(그러면 미뤄진 trap 이 돌아 정리를 이어 탄다 [추론]). 완화 후보는 mycontainer_run 을 백그라운드로 띄우고 wait 하는 구조이나, 그러면 stdin 이 /dev/null 이 되어(run 모드의 대화형 셸이 깨짐) 채택하지 않았다.
+  - 시점: w5
   - 해결: (미해결)
 
 ### 세션 로그와 리포트

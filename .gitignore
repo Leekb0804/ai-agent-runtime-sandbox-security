@@ -14,6 +14,7 @@ src/test_kill
 src/test_kill_session
 src/test_loader_args
 src/test_exec_path
+src/test_exec_identity
 
 # 로컬 전용 설정
 .claude/settings.local.json

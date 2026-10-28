@@ -110,7 +110,8 @@ LATENCY_TOOL="$HERE/tools/live_latency.sh"
 # 러너 전용 로더에 켤 탐지기. 로더는 --detectors 가 없으면 더미(시험용)를 켜지 않는다.
 # s99, s03 은 dummy_block 의 BLOCK 에, s99 의 마지막 기대는 dummy_suspect 의 판정에 의존한다. 이 목록은 여기서만 정한다.
 # 일부러 알파벳순이 아닌 순서로 둔다. ready 줄은 로더가 정렬해서 내므로, 아래 want_dets 의 정렬이 빠지면 테스트(ld1)가 잡는다.
-RUNNER_DETECTORS="write_exec_boundary,dummy_block,dummy_suspect"
+# exec_identity 는 운영 탐지기라 운영 설정과 같게 켠다 (s06, s07 이 그 판정에 의존한다. 기존 시나리오의 detector 필터 없는 verdict 검사는 BLOCK 만 본다)
+RUNNER_DETECTORS="write_exec_boundary,dummy_block,dummy_suspect,exec_identity"
 
 # 옵션 상태. KEEP=1 이면 성공해도 로그를 보관한다. FILTERS 는 --only 로 받은 이름 패턴들이다 (여러 번 받으면 합집합).
 KEEP=0
@@ -1256,6 +1257,9 @@ drops_line="$(grep 'ring buffer drops' "$WORK/loader.err" | tail -1)"
 drop_exec="$(sed -n 's/.*exec=\([0-9][0-9]*\).*/\1/p' <<<"$drops_line")"
 # 같은 줄에서 tag_hit= 뒤의 숫자만 뽑는다. 숫자가 없으면 빈 문자열이 된다.
 drop_tag="$(sed -n 's/.*tag_hit=\([0-9][0-9]*\).*/\1/p' <<<"$drops_line")"
+# 같은 줄에서 exec_path= 뒤의 숫자만 뽑는다 (EVT_EXEC_PATH, 853538e 부터). 숫자가 없으면 빈 문자열이 된다.
+# 위 exec= 의 정규식은 이 칸에 걸리지 않는다 ("exec_path=" 안에 "exec=" 라는 글자가 없다).
+drop_path="$(sed -n 's/.*exec_path=\([0-9][0-9]*\).*/\1/p' <<<"$drops_line")"
 # 줄 자체가 없으면 (로더가 정상 종료하지 못했거나 드롭을 출력하지 않는 로더) 확인할 수 없으므로 실패로 본다.
 if [[ -z "$drops_line" ]]; then
     # 실패 이유를 출력한다.
@@ -1274,16 +1278,23 @@ elif [[ -z "$drop_exec" || -z "$drop_tag" ]]; then
     echo "[FAIL] ring buffer 드롭 확인: exec= 또는 tag_hit= 값을 해석하지 못했다"
     # 인프라 검증 실패로 표시한다.
     infra_fail=1
-# -ne 0 : 0 이 아니면 참. 둘 중 하나라도 0 이 아니면 이벤트가 버려진 것이다.
-elif [[ "$drop_exec" -ne 0 || "$drop_tag" -ne 0 ]]; then
-    # 버려진 개수를 함께 출력한다.
-    echo "[FAIL] ring buffer 드롭 확인: exec=$drop_exec tag_hit=$drop_tag (이벤트가 버려져 PASS 를 믿을 수 없다)"
+# exec_path= 가 없는 줄은 EXEC_PATH 드롭을 세지 않는 옛 로더의 줄이다. 0 으로 여기지 않고 실패로 본다 (위와 같은 fail-closed).
+# 러너는 exec_identity 를 켜므로 그 탐지기가 없는 옛 로더는 ready 줄 비교에서 이미 걸러진다. 여기는 형식이 어긋난 경우의 안전장치다.
+elif [[ -z "$drop_path" ]]; then
+    # 실패 이유를 출력한다. 앞 두 칸은 읽었으므로 그 값도 보여 준다.
+    echo "[FAIL] ring buffer 드롭 확인: exec_path= 값이 없다 (옛 로더의 줄일 수 있다: exec=$drop_exec tag_hit=$drop_tag)"
     # 인프라 검증 실패로 표시한다.
     infra_fail=1
-# 위 조건에 모두 걸리지 않았으면 두 값이 모두 0 이다.
+# -ne 0 : 0 이 아니면 참. 셋 중 하나라도 0 이 아니면 이벤트가 버려진 것이다.
+elif [[ "$drop_exec" -ne 0 || "$drop_tag" -ne 0 || "$drop_path" -ne 0 ]]; then
+    # 버려진 개수를 함께 출력한다.
+    echo "[FAIL] ring buffer 드롭 확인: exec=$drop_exec tag_hit=$drop_tag exec_path=$drop_path (이벤트가 버려져 PASS 를 믿을 수 없다)"
+    # 인프라 검증 실패로 표시한다.
+    infra_fail=1
+# 위 조건에 모두 걸리지 않았으면 세 값이 모두 0 이다.
 else
     # 통과를 출력한다. 값은 0 이지만 읽은 값을 그대로 보여 준다.
-    echo "[PASS] ring buffer 드롭 없음 (exec=$drop_exec tag_hit=$drop_tag)"
+    echo "[PASS] ring buffer 드롭 없음 (exec=$drop_exec tag_hit=$drop_tag exec_path=$drop_path)"
 fi
 
 # 2) 세션을 못 찾아 _unattributed 로 간 기록이 없는가 (있으면 by-cgroup 링크가 안 만들어진 것)

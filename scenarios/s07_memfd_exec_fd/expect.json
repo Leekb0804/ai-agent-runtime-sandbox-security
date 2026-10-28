@@ -1,0 +1,35 @@
+{
+  "description": "공격 흉내: python3 가 memfd 에 true 를 담아 fd 번호로 직접(os.execve(fd, ...)) 실행한다. 디스크에 쓴 파일이 없어 write_exec_boundary 는 보지 못하고(TAG_HIT 없음) exec_identity 의 규칙 M([M], 최종 이름 memfd:x)이 SUSPECT 를 한 번 낸다. 차단과 종료 대응은 없다. exec_identity 의 SUSPECT 개수와 TAG_HIT 이 없다는 값은 VM 에서 컨테이너 안 실행으로 한 번 실측한 값이다 (반복 안정성을 확정한 것은 아니다). fd 직접 실행에서 EXEC 이벤트가 생기는지는 단언하지 않는다 (판정만 검사한다).",
+  "expect": [
+    {
+      "note": "양성 검사 (탐지기와 무관): 커널이 python3 의 실행을 관측했다. 이 검사가 없으면 빈 로그도 통과한다",
+      "match": { "type": "event", "kind": "EXEC", "filename": "/usr/bin/python3" },
+      "min": 1
+    },
+    {
+      "note": "exec_identity 가 memfd 실행(fd 번호로 직접 실행)을 규칙 M 으로 SUSPECT 한 번 기록. 러너가 dummy_suspect 도 켜므로 detector 로 거른다. 한 번 실측한 값 기준, 값이 바뀌면 원인을 본다",
+      "match": { "type": "verdict", "level": "SUSPECT", "detector": "exec_identity" },
+      "count": 1
+    },
+    {
+      "note": "write_exec_boundary 는 이 실행을 보지 못한다 (디스크에 쓴 파일이 없어 쓰기 태그가 없다). 이것이 exec_identity 가 필요한 이유다",
+      "match": { "type": "verdict", "detector": "write_exec_boundary" },
+      "count": 0
+    },
+    {
+      "note": "파일 쓰기가 없어서 쓴 파일의 실행(TAG_HIT)도 없다 (탐지기와 무관한 사실, 한 번 실측)",
+      "match": { "type": "event", "kind": "TAG_HIT" },
+      "count": 0
+    },
+    {
+      "note": "exec_identity 는 SUSPECT 만 낸다. 차단은 없어야 한다",
+      "match": { "type": "verdict", "level": "BLOCK" },
+      "count": 0
+    },
+    {
+      "note": "차단이 없으므로 종료 대응 기록도 없다 (s00, n05 와 같은 방식)",
+      "match": { "type": "action" },
+      "count": 0
+    }
+  ]
+}

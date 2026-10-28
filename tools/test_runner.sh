@@ -184,8 +184,10 @@ echo "[정상 흐름]"
 check "가짜 로그가 기대와 맞으면 전체 통과 (종료 코드 0)" 0 MOCK_MODE=normal
 expect_text "요약에 2개 모두 통과로 표시" "시나리오 2/2 통과"
 expect_text "인프라 검증도 통과" "로그 유실 없음"
-# 가짜 로더는 기본으로 exec=0 tag_hit=0 을 보고한다. 드롭 검사의 PASS 경로가 실제로 출력되는지 확인한다.
+# 가짜 로더는 기본으로 exec=0 tag_hit=0 exec_path=0 을 보고한다. 드롭 검사의 PASS 경로가 실제로 출력되는지 확인한다.
 expect_text "ring buffer 드롭 검사도 통과" "[PASS] ring buffer 드롭 없음"
+# 통과 문구에 세 칸이 모두 나오는지 (exec_path 를 읽었다는 증거)
+expect_text "드롭 통과 문구에 exec_path=0 까지 나옴" "[PASS] ring buffer 드롭 없음 (exec=0 tag_hit=0 exec_path=0)"
 
 echo "[실패를 잡아내는가]"
 check "로그가 기대와 다르면 FAIL (종료 코드 1)" 1 MOCK_MODE=wrong
@@ -215,6 +217,15 @@ expect_text "드롭 줄이 없음을 알려 줌" "[FAIL] ring buffer 드롭 확�
 # MOCK_DROPS=garbage : 드롭 줄은 있지만 숫자를 뽑을 수 없다. 형식이 바뀐 줄을 통과로 보면 안 된다.
 check "드롭 줄의 값을 해석하지 못하면 FAIL" 1 MOCK_DROPS=garbage
 expect_text "해석 실패를 알려 줌" "[FAIL] ring buffer 드롭 확인: exec= 또는 tag_hit= 값을 해석하지 못했다"
+# MOCK_DROPS_PATH=4 : exec 와 tag_hit 는 0 이고 exec_path 드롭만 4개. exec_path 값도 읽는지 확인한다.
+check "로더가 exec_path 이벤트를 버렸다고 보고하면 FAIL" 1 MOCK_DROPS_PATH=4
+expect_text "exec_path 드롭 수를 보여 줌" "[FAIL] ring buffer 드롭 확인: exec=0 tag_hit=0 exec_path=4"
+# MOCK_DROPS=old : exec_path= 칸이 없는 옛 형식 줄. 칸이 없다고 0 으로 보면 안 된다 (fail-closed)
+check "드롭 줄에 exec_path= 가 없으면 FAIL" 1 MOCK_DROPS=old
+expect_text "exec_path 칸이 없음을 알려 줌" "[FAIL] ring buffer 드롭 확인: exec_path= 값이 없다 (옛 로더의 줄일 수 있다: exec=0 tag_hit=0)"
+# 옛 형식이라도 앞 두 칸의 해석은 그대로다: exec 드롭이 있는 옛 줄은 앞 칸 값을 보여 주며 FAIL
+check "옛 형식 줄에 exec 드롭이 있어도 FAIL" 1 MOCK_DROPS=old MOCK_DROPS_EXEC=6
+expect_text "옛 형식 줄의 exec 값을 읽음" "옛 로더의 줄일 수 있다: exec=6 tag_hit=0"
 
 echo "[기다리는가]"
 # slow 모드의 가짜 agent-run 은 바로 종료하고 로그는 그 뒤에도 0.3초 간격으로 계속 써진다.
@@ -960,25 +971,25 @@ expect_loader_arg() {
         failures=$((failures + 1))
     fi
 }
-# ld1: 정상. 러너가 --detectors 로 세 탐지기를 넘기고, ready 줄이 맞으면 그대로 돈다
+# ld1: 정상. 러너가 --detectors 로 네 탐지기를 넘기고, ready 줄이 맞으면 그대로 돈다
 : >"$LREC"
 check "ld1 ready 줄의 mode 와 detectors 가 맞으면 통과" 0 MOCK_MODE=normal MOCK_LOADER_RECORD="$LREC"
 # 러너는 RUNNER_DETECTORS 를 정렬하지 않고 그대로 넘긴다 (정렬은 ready 비교에서만)
-expect_loader_arg "ld1 러너가 --detectors 로 세 탐지기를 넘김" "--detectors=write_exec_boundary,dummy_block,dummy_suspect"
+expect_loader_arg "ld1 러너가 --detectors 로 네 탐지기를 넘김" "--detectors=write_exec_boundary,dummy_block,dummy_suspect,exec_identity"
 expect_loader_gone "ld1 끝나면 로더가 정리됨"
 # ld2: 옛 형식 ready (mode, detectors 없음) -> 시작 거부
 : >"$LREC"
 check "ld2 옛 형식 ready 줄 -> 시작 거부" 2 MOCK_MODE=oldready MOCK_LOADER_RECORD="$LREC"
 expect_text "ld2 이유를 알림" "ready 줄이 기대와 다르다"
 expect_loader_gone "ld2 거부한 뒤 로더가 정리됨"
-# ld3: 켜진 탐지기가 다름 (dummy_suspect 가 빠짐) -> 시작 거부
+# ld3: 켜진 탐지기가 다름 (dummy_suspect 와 exec_identity 가 빠짐) -> 시작 거부
 : >"$LREC"
 check "ld3 detectors 가 다르면 시작 거부" 2 MOCK_MODE=normal MOCK_READY_DETECTORS=dummy_block,write_exec_boundary MOCK_LOADER_RECORD="$LREC"
-expect_text "ld3 기대 목록을 알림" "기대: mode: kill, detectors: dummy_block,dummy_suspect,write_exec_boundary"
+expect_text "ld3 기대 목록을 알림" "기대: mode: kill, detectors: dummy_block,dummy_suspect,exec_identity,write_exec_boundary"
 expect_loader_gone "ld3 거부한 뒤 로더가 정리됨"
 # ld4: 목록은 같지만 알파벳순이 아님 (러너가 넘긴 순서 그대로) -> 시작 거부 (로더는 항상 정렬해서 낸다)
 : >"$LREC"
-check "ld4 detectors 순서가 알파벳순이 아니면 시작 거부" 2 MOCK_MODE=normal MOCK_READY_DETECTORS=write_exec_boundary,dummy_block,dummy_suspect MOCK_LOADER_RECORD="$LREC"
+check "ld4 detectors 순서가 알파벳순이 아니면 시작 거부" 2 MOCK_MODE=normal MOCK_READY_DETECTORS=write_exec_boundary,dummy_block,dummy_suspect,exec_identity MOCK_LOADER_RECORD="$LREC"
 # ld5: mode 가 kill 이 아님 -> 시작 거부
 : >"$LREC"
 check "ld5 mode 가 kill 이 아니면 시작 거부" 2 MOCK_MODE=normal MOCK_READY_MODE=observe MOCK_LOADER_RECORD="$LREC"

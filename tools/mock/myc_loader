@@ -5,16 +5,18 @@
 # 진짜 로더와 같은 약속만 지킨다.
 #   - 준비되면 stderr 에 "[loader] ready ..." 를 낸다
 #   - SIGTERM 이나 SIGINT 를 받으면 "[loader] log stats: ... lost=N" 를 내고,
-#     이어서 "[loader] ring buffer drops: exec=N tag_hit=M" 를 낸 뒤 종료한다 (src/loader/loader.c 의 report_drops 와 같은 형식)
+#     이어서 "[loader] ring buffer drops: exec=N tag_hit=M exec_path=K" 를 낸 뒤 종료한다 (src/loader/loader.c 의 report_drops 와 같은 형식)
 # MOCK_MODE=noready : 준비되지 못하고 바로 죽는 로더 (러너가 시작을 거부하는지 확인)
 # MOCK_MODE=hang    : 준비 메시지를 내지 않고 살아 있는 로더 (BPF 로드가 멈춘 경우. 러너가 시간 초과 뒤 로더를 끄는지 확인)
 #                     종료 신호를 받으면 평소처럼 끝나고, 받지 못해도 30초 뒤 스스로 끝난다 (테스트가 깨졌을 때 고아가 오래 남지 않게)
 # MOCK_LOST=N       : 종료 시 lost=N 을 보고하는 로더 (러너의 인프라 검증이 잡아내는지 확인)
 # MOCK_DROPS_EXEC=N : 종료 시 exec 드롭을 N 으로 보고 (기본 0)
 # MOCK_DROPS_TAG=N  : 종료 시 tag_hit 드롭을 N 으로 보고 (기본 0)
+# MOCK_DROPS_PATH=N : 종료 시 exec_path 드롭을 N 으로 보고 (기본 0)
 # MOCK_DROPS=fail   : 드롭 줄을 "확인 실패" 로 낸다 (로더가 드롭 맵을 읽지 못한 경우를 흉내냄)
 # MOCK_DROPS=none   : 드롭 줄을 아예 내지 않는다 (드롭을 출력하지 않는 옛 로더를 흉내냄)
 # MOCK_DROPS=garbage: 드롭 줄은 내지만 "확인 실패" 도 exec=/tag_hit= 숫자도 없다 (줄 형식이 바뀐 경우를 흉내냄)
+# MOCK_DROPS=old    : exec_path= 칸이 없는 옛 형식 "exec=N tag_hit=M" 으로 낸다 (853538e 이전 로더를 흉내냄)
 # MOCK_MODE=oldready : ready 줄을 옛 형식 "[loader] ready (sessions root: X)" 로 낸다 (옛 로더를 러너가 거부하는지 확인)
 # MOCK_READY_DETECTORS=<값> : ready 줄의 detectors 에 받은 목록 대신 이 값을 찍는다 (탐지기가 다르게 켜진 로더를 흉내냄)
 # MOCK_READY_MODE=<값>      : ready 줄의 mode 에 이 값을 찍는다 (다른 모드로 뜬 로더를 흉내냄). --no-kill 보다 우선한다
@@ -66,12 +68,14 @@ on_term() {
     case "${MOCK_DROPS:-}" in
         # none : 드롭 줄을 내지 않는다. : 는 아무 일도 하지 않는 명령이다.
         none) : ;;
-        # fail : 진짜 로더가 드롭 맵을 읽지 못했을 때 내는 줄 (loader.c:112 와 같은 문구).
+        # fail : 진짜 로더가 드롭 맵을 읽지 못했을 때 내는 줄 (loader.c:140 와 같은 문구).
         fail) echo "[loader] ring buffer drops: 확인 실패" >&2 ;;
         # garbage : 'ring buffer drops' 는 들어 있지만 러너가 숫자를 뽑을 수 없는 줄.
         garbage) echo "[loader] ring buffer drops: 알 수 없음" >&2 ;;
-        # 그 밖 (기본) : 진짜 로더가 읽기에 성공했을 때 내는 줄 (loader.c:109 와 같은 형식). 값이 없으면 0.
-        *) echo "[loader] ring buffer drops: exec=${MOCK_DROPS_EXEC:-0} tag_hit=${MOCK_DROPS_TAG:-0}" >&2 ;;
+        # old : exec_path= 칸이 없는 옛 로더의 줄 (853538e 이전 형식).
+        old) echo "[loader] ring buffer drops: exec=${MOCK_DROPS_EXEC:-0} tag_hit=${MOCK_DROPS_TAG:-0}" >&2 ;;
+        # 그 밖 (기본) : 진짜 로더가 읽기에 성공했을 때 내는 줄 (loader.c 의 report_drops 와 같은 형식). 값이 없으면 0.
+        *) echo "[loader] ring buffer drops: exec=${MOCK_DROPS_EXEC:-0} tag_hit=${MOCK_DROPS_TAG:-0} exec_path=${MOCK_DROPS_PATH:-0}" >&2 ;;
     esac
     # 정상 종료(0)한다.
     exit 0

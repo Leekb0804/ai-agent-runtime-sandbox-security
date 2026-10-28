@@ -1,0 +1,35 @@
+{
+  "description": "규칙 L 의 e2e: 세션이 /tmp/payload 를 쓰고 /tmp/bin/ls 라는 심볼릭 링크로 위장해 실행한다. exec_identity 의 규칙 L([L], 요청 ls, 실제 payload, 위치 /tmp)이 SUSPECT 를 한 번 내고, 실제 파일이 세션이 쓴 파일이라 write_exec_boundary 도 같은 실행을 SUSPECT 로 한 번 낸다 (두 탐지기가 겹치는 경우). 로더를 재시작해 쓰기 태그가 없어진 뒤에는 규칙 L 만 울리는 것을 수동 VM 시험으로 한 번 확인했지만, 로더 재시작은 러너로 자동화하기 어려워 이 시나리오에 넣지 않았다. 차단과 종료 대응은 없다. 개수는 VM 에서 로더가 떠 있는 상태로 한 번 실측한 값이다 (반복 안정성을 확인한 것은 아니다). [L] 이유 문자열은 judge 가 부분 일치를 지원하지 않아 검사하지 않는다.",
+  "expect": [
+    {
+      "note": "양성 검사 (탐지기와 무관): 위장된 이름 /tmp/bin/ls 로 실제 실행이 있었다. 이 검사가 없으면 빈 로그도 통과한다",
+      "match": { "type": "event", "kind": "EXEC", "filename": "/tmp/bin/ls" },
+      "min": 1
+    },
+    {
+      "note": "exec_identity 가 링크 위장(요청 basename ls, 실제 파일 payload, /tmp 바로 아래)을 규칙 L 로 SUSPECT 한 번 기록. 러너가 dummy_suspect 도 켜므로 detector 로 거른다. 한 번 실측한 값 기준, 값이 바뀌면 원인을 본다",
+      "match": { "type": "verdict", "level": "SUSPECT", "detector": "exec_identity" },
+      "count": 1
+    },
+    {
+      "note": "write_exec_boundary 도 같은 실행을 SUSPECT 로 한 번 기록 (세션이 쓴 파일이라 쓰기 태그가 있다). 두 탐지기가 겹친다는 증거다 (한 번 실측)",
+      "match": { "type": "verdict", "level": "SUSPECT", "detector": "write_exec_boundary" },
+      "count": 1
+    },
+    {
+      "note": "커널이 세션이 쓴 파일의 실행(TAG_HIT)을 한 번 관측했다. write_exec_boundary 판정의 입력이 실제로 있었다 (한 번 실측)",
+      "match": { "type": "event", "kind": "TAG_HIT" },
+      "count": 1
+    },
+    {
+      "note": "두 탐지기 모두 SUSPECT 만 낸다. 차단은 없어야 한다",
+      "match": { "type": "verdict", "level": "BLOCK" },
+      "count": 0
+    },
+    {
+      "note": "차단이 없으므로 종료 대응 기록도 없다 (s06, s07 과 같은 방식)",
+      "match": { "type": "action" },
+      "count": 0
+    }
+  ]
+}

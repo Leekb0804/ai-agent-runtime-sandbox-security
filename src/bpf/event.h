@@ -21,6 +21,7 @@ enum evt_kind {
     EVT_OPEN  = 3,   /* 파일 open (2주차 예정) */
     EVT_DNS   = 4,   /* DNS 쿼리 (v0.3 예정) */
     EVT_TAG_HIT = 5,   /* 세션이 쓴 파일이 exec 됨 (2주차) */
+    EVT_EXEC_PATH = 6, /* exec 되는 파일의 요청 이름과 최종 dentry 이름 (4주차, security_bprm_check) */
 };
 
 /*
@@ -42,7 +43,8 @@ struct event_hdr {
 /*
  * EVT_EXEC 이벤트: 헤더 + payload(실행 요청된 파일 이름).
  * 첫 필드가 헤더이므로 (struct event_hdr *) 로 캐스팅해 헤더만 읽을 수 있다.
- * 4주차에 resolved_path 등을 추가할 때는 filename 뒤에 덧붙인다.
+ * 최종 파일 이름은 이 구조체에 덧붙이지 않는다. sys_enter_execve 에서는 경로 해석 전이라 얻을 수 없어서,
+ * security_bprm_check 에서 별도 종류 EVT_EXEC_PATH(struct evt_exec_path)로 보낸다 (docs/exec-identity-scenarios-w4.md 3절).
  */
 struct evt_exec {
     struct event_hdr hdr;
@@ -68,6 +70,24 @@ struct evt_tag_hit {
     char filename[MAX_FILENAME];   /* bprm->filename (exec 요청 경로). 길면 잘림 */
 };
 
+/* dentry 이름 한 개를 담는 칸의 크기. 커널의 이름 최대 길이(255)보다 작아서 긴 이름은 잘린다. */
+#define MAX_DNAME 64
+
+/*
+ * EVT_EXEC_PATH 이벤트: security_bprm_check 에서 본 실행 파일의 요청 이름과 최종 파일 이름.
+ * 세션 cgroup 안의 exec 만 보낸다 (hdr.cgroup_id 는 exec 한 프로세스의 cgroup, EXEC 과 같은 의미).
+ * 셔뱅 스크립트는 훅이 두 번 불려 이벤트도 두 번 나온다 (둘째는 최종 이름이 인터프리터).
+ * execveat(fd 직접 실행)도 이 훅을 지나므로 EVT_EXEC 이 없어도 이 이벤트는 나온다.
+ * 이름 칸은 dentry 를 읽지 못하면 빈 문자열이다. 경로 전체가 아니라 이름 세 단계뿐이다.
+ */
+struct evt_exec_path {
+    struct event_hdr hdr;
+    char filename[MAX_FILENAME];       /* bprm->filename (exec 요청 이름). 길면 잘림 */
+    char final_name[MAX_DNAME];        /* bprm->file 의 dentry 이름 (링크를 다 따라간 최종 파일). 길면 잘림 */
+    char parent_name[MAX_DNAME];       /* 그 부모 dentry 이름. 파일시스템 루트면 "/" */
+    char grandparent_name[MAX_DNAME];  /* 조부모 dentry 이름 */
+};
+
 /*
  * ring buffer 예약 실패(가득 참)로 버려진 이벤트를 세는 칸의 번호.
  * 커널 쪽 drop_counts 맵의 key 이자 로더가 출력할 때 쓰는 번호이다.
@@ -75,7 +95,8 @@ struct evt_tag_hit {
 enum drop_kind {
     DROP_EXEC    = 0,   /* EVT_EXEC 이벤트 */
     DROP_TAG_HIT = 1,   /* EVT_TAG_HIT 이벤트 */
-    DROP_KIND_MAX       /* 개수 (맵의 max_entries 와 같다) */
+    DROP_EXEC_PATH = 2, /* EVT_EXEC_PATH 이벤트 */
+    DROP_KIND_MAX      /* 개수 (맵의 max_entries 와 같다) */
 };
 
 #endif /* EVENT_H */

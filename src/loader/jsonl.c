@@ -42,7 +42,8 @@ static const char *kind_str(__u32 kind)
     case EVT_OPEN:  return "OPEN";
     case EVT_DNS:   return "DNS";
     case EVT_TAG_HIT: return "TAG_HIT";
-    default:        return "UNKNOWN";
+    case EVT_EXEC_PATH: return "EXEC_PATH";
+    default:       return "UNKNOWN";
     }
 }
 
@@ -71,6 +72,17 @@ static void put_event_obj(FILE *f, const struct event_hdr *h, size_t len)
                 (unsigned long long)e->tag_write_count, e->dev, (unsigned long long)e->ino);
         fputs(",\"filename\":", f);
         json_put_string(f, e->filename, MAX_FILENAME);   /* 공격자가 정할 수 있는 값 */
+    }
+    if (h->kind == EVT_EXEC_PATH && len >= sizeof(struct evt_exec_path)) {
+        const struct evt_exec_path *e = (const struct evt_exec_path *)h;
+        fputs(",\"filename\":", f);
+        json_put_string(f, e->filename, MAX_FILENAME);   /* 요청 이름. 공격자가 정할 수 있는 값 */
+        fputs(",\"final_name\":", f);
+        json_put_string(f, e->final_name, MAX_DNAME);    /* 최종 dentry 이름. 공격자가 정할 수 있는 값 */
+        fputs(",\"parent_name\":", f);
+        json_put_string(f, e->parent_name, MAX_DNAME);   /* 부모 dentry 이름 */
+        fputs(",\"grandparent_name\":", f);
+        json_put_string(f, e->grandparent_name, MAX_DNAME);   /* 조부모 dentry 이름 */
     }
     fputc('}', f);
 }

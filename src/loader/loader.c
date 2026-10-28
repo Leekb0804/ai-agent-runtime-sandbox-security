@@ -132,8 +132,10 @@ static void report_drops(struct watcher_bpf *skel)
     }
 
     if (ok)
-        fprintf(stderr, "[loader] ring buffer drops: exec=%llu tag_hit=%llu\n",
-                (unsigned long long)sum[DROP_EXEC], (unsigned long long)sum[DROP_TAG_HIT]);
+        /* exec_path= 는 끝에 덧붙인다. 러너는 exec= 와 tag_hit= 숫자를 sed 로 뽑으므로 앞 두 칸의 형식을 유지한다 */
+        fprintf(stderr, "[loader] ring buffer drops: exec=%llu tag_hit=%llu exec_path=%llu\n",
+                (unsigned long long)sum[DROP_EXEC], (unsigned long long)sum[DROP_TAG_HIT],
+                (unsigned long long)sum[DROP_EXEC_PATH]);
     else
         fprintf(stderr, "[loader] ring buffer drops: 확인 실패\n");
     free(vals);

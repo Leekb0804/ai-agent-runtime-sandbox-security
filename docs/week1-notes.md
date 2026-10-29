@@ -20,11 +20,12 @@
 
 - [ ] **execveat은 관측하지 않음**
   - 이유: sys_enter_execve만 붙어 있어 execveat(fexecve 포함)으로 실행하면 이벤트가 남지 않는다.
+  - 비고: w4 의 EVT_EXEC_PATH(security_bprm_check)는 execveat 실행도 본다. 요청 이름 /dev/fd/3, 최종 이름 memfd:x 로 기록되고 exec_identity [M] 이 울렸다 [VM확인, 한 번, s07]. EXEC 이벤트(sys_enter_execve)는 여전히 남지 않는다.
   - 시점: w4
   - 해결: (미해결)
 - [ ] **세션마다 부트스트랩 EXEC(/proc/self/exe)가 먼저 기록됨**
   - 이유: mycontainer_run이 phase2 진입을 위해 스스로를 re-exec하는 것이므로, 탐지기가 이를 에이전트 행동으로 오인하지 않게 걸러야 한다.
-  - 비고: w2d3 결정으로 v0.2 이후로 미룬다. write_exec_boundary 는 TAG_HIT 만 보므로 영향이 작고, 더미 탐지기만 이 EXEC 를 SUSPECT 로 판정한다.
+  - 비고: w2d3 결정으로 v0.2 이후로 미룬다. write_exec_boundary 는 TAG_HIT 만 보므로 영향이 작고, 더미 탐지기만 이 EXEC 를 SUSPECT 로 판정한다. w4: EXEC_PATH 에서는 (mycontainer_run, src, Agent-Runtime-Security-Project, 호스트 경로)로 보이며, 임시 위치가 아니라서 exec_identity 는 판정하지 않는다 (정상 시나리오 판정 0개 [VM확인]. 이 줄 자체를 따로 시험하지는 않았다).
   - 시점: v0.2 이후 (w2d3 결정으로 미룸)
   - 해결: (미해결)
 - [ ] **sh -c 의 마지막 명령으로 실행한 /tmp/trigger 의 execve 이벤트가 컨테이너 안에서 관측되지 않음**
@@ -32,6 +33,10 @@
   - 비고: 호스트 busybox strace 로는 두 경우 모두 execve 가 호출되어 BPF 프로그램 또는 로더 쪽을 의심한다. 원인 미상. s00 의 실제 로그(tools/fixtures/real_s00_benign)에서는 /bin/ls 가 /bin/sh 와 같은 pid 로 제자리 실행되었는데도 정상 관측되었으므로 제자리 exec 자체가 원인은 아니며, 실행 대상이 직접 만든 #!/bin/sh 스크립트라는 점이 차이일 수 있다 (미확인). 2주차 월요일에 로더를 직접 띄워 두 스크립트를 비교하면서 조사한다. w2d1 조사: 로더를 직접 띄운 수동 실행(4회)과 러너 경유 실행(34회)에서 '; true' 없는 제자리 exec 가 모두 관측되어 재현되지 않았다. #!/bin/sh 스크립트라는 점도 차이가 아니었다. 38회 중 누락 0회이며 원인은 규명하지 못했다. 로더는 10/3 빌드, run_container.sh 는 10/4 수정본 기준(VM 시각)이고 FAIL 당시와 같은 빌드였는지는 확인하지 못했다.
   - 시점: w2
   - 해결: (미해결. w2d1 재현 불가, 원인 미규명)
+- [ ] **EXEC_PATH 는 dentry 이름을 세 단계(최종, 부모, 조부모)만 읽어 위치를 정확히 가리지 못함** (`exec_path.h`, `exec_identity.c`)
+  - 이유: bpf_d_path 를 이 훅에서 쓸 수 없어 이름만 읽는다. /tmp/sub/x 는 (x, sub, tmp)라서 "/tmp 안" 으로 못 가리고, <d>/var/tmp/x 는 /var/tmp/x 와 구분되지 않는다. 별도 마운트(/dev/shm)는 부모가 / 로 보여 구분되지 않을 것이다 [추론].
+  - 시점: v0.2 이후
+  - 해결: (미해결)
 
 ### fail-closed
 
@@ -96,8 +101,13 @@
   - 해결: (미해결)
 - [ ] **세션 도중 로더가 죽어도 실행 중인 세션은 감시 없이 계속 돎**
   - 이유: 로더 생존은 agent-run 시작 시점에만 확인하므로(w3d1), 확인을 통과한 뒤 로더가 죽으면 이벤트 수집과 판정, kill이 멈춘 채 에이전트가 계속 실행되고 사용자는 알 수 없다.
-  - 비고: 완화책은 관리자(mycontainer_run)가 세션 동안 주기적으로 myc_loader_alive 를 확인하고 로더가 없으면 스스로 cgroup.kill 을 쓰는 것. 러너 timeout 정책(결정 12)과 함께 설계.
+  - 비고: 완화책은 관리자(mycontainer_run)가 세션 동안 주기적으로 myc_loader_alive 를 확인하고 로더가 없으면 스스로 cgroup.kill 을 쓰는 것. 러너 timeout 정책(결정 12)과 함께 설계. w4 관찰 [VM확인, 한 번]: 로더를 껐다 다시 띄우면 session_cgroups(pin)는 유지되어 새 로더가 같은 세션을 이어받아 기록하지만, write_tags(pin 안 됨)는 사라져 그 전에 쓴 파일의 실행은 write_exec_boundary 가 못 잡는다.
   - 시점: w4
+  - 해결: (미해결)
+- [ ] **로더 재시작 뒤, 그 전에 쓴 파일을 이름 그대로 실행하면 두 탐지기 모두 못 잡음**
+  - 이유: write_tags 는 pin 되지 않아 재시작으로 사라지고, 이름이 같아 규칙 L 도 울리지 않는다. 링크 위장(/tmp/bin/ls)은 exec_identity [L] 만 울렸고, 직접 실행(/tmp/payload)은 EXEC_PATH 이벤트만 남았다 [VM확인, 한 번].
+  - 비고: 바로 위 "세션 도중 로더가 죽어도…" 항목과 같은 pin 문제로 이어진다(session_cgroups 는 pin, write_tags 는 pin 안 됨). write_tags pin 여부는 그 항목과 함께 정한다.
+  - 시점: w5
   - 해결: (미해결)
 - [ ] **귀속 안 된 세션(_unattributed)의 BLOCK은 종료하지 못함**
   - 이유: kill 은 세션 ID 끝 숫자로 cgroup 경로를 만드는데 _unattributed 에는 숫자가 없어 시도하지 않는다. result: skipped 기록과 stderr 경고만 남고 그 cgroup 은 계속 돈다.
@@ -188,6 +198,7 @@
   - 반영: w2 설계 메모(탐지기는 서로 독립이고 실행 순서에 의존하지 않는다는 작성 규칙)
 - **json_escape가 0x80 이상 바이트를 그대로 출력함** (`json_escape.c`)
   - 이유: 유효하지 않은 UTF-8 바이트열이 섞이면 일부 JSON 파서가 그 줄을 거부할 수 있다.
+  - 비고: w4: exec_identity 규칙 L 의 이유 문자열(reason)이 요청 basename 을 20바이트에서 바이트 단위로 자르므로 UTF-8 문자 중간에서 잘릴 수 있다 [추론, 시나리오 이름은 ASCII 라 확인하지 않음].
   - 반영: w5 로그 스키마 확정 시 파서 동작 확인, README 한계 섹션
 - **로그 쓰기가 동기식이라 디스크가 막히면 수신 루프도 멈춤** (`session_log.c`)
   - 이유: 쓰기마다 fflush 하는 동기식이라 디스크 지연이 ring buffer 수신을 멈춘다.
@@ -223,3 +234,10 @@
   - 이유: write_exec_boundary 는 실행한 쪽의 cgroup 이 쓴 세션과 다르다는 것만 본다. 개발자가 에이전트가 빌드한 결과물을 호스트 셸에서 직접 실행하는 정상 흐름도, 호스트의 자동화(크론, CI, IDE 확장 등)가 에이전트의 파일을 실행하는 경우와 같은 BLOCK 이 된다. scenarios/n06_host_runs_output 이 이 동작을 기대값으로 고정한다 (write_exec_boundary BLOCK 1, kill/already_gone 1, 컨테이너 안 SUSPECT 0). VM 에서 러너로 다섯 번 돌려 모두 같았고, 반복 안정성을 확정한 것은 아니다.
   - 비고: 사후 차단이라 호스트의 실행 자체는 멈추지 않는다. 세션은 호스트 실행 전에 이미 끝나 있어 종료 시도는 already_gone 으로 기록된다. 완화 방향은 아직 정하지 않았다 (실행한 쪽의 맥락 확인, 검토가 끝난 산출물의 해시 허용 목록, 세션 밖 실행을 BLOCK 이 아닌 경고 수준으로 낮추기 등). 설계 메모(design-memo-w2) 8절의 "BLOCK 대응 대상" 열린 질문과 연결된다.
   - 반영: README 한계 섹션(w5). 완화 여부는 v0.2 이후에 다시 본다.
+- **exec_identity 는 요청 이름과 최종 파일 이름이 같은 실행, 임시 위치 밖의 위장, exec 가 없는 실행을 보지 않음** (`exec_identity.c`)
+  - 이유: 규칙 M 은 memfd, 규칙 L 은 이름 불일치 + /tmp·/var/tmp 바로 아래만 본다. 복사·이름 변경·하드링크·PATH 조작은 이름이 같아 보지 않고(세션이 쓴 파일이면 write_exec_boundary 가 잡음), /usr/local/bin 등 임시 위치 밖 링크 위장과 명령 치환·셸 내장·인터프리터 경유·프로세스 안 코드 로드는 보지 않는다.
+  - 비고: docs/exec-identity-scenarios-w4.md 5절, 9절.
+  - 반영: 정의서 5절 표와 9절에 기록. 규칙을 넓힐지는 v0.2 이후에 다시 본다.
+- **mmap 쓰기 뒤 실행과 LRU 축출 뒤 실행의 미탐 여부를 확인하지 못함** (`write_tag.h`)
+  - 이유: 확인하지 못했다. mmap 쓰기는 시험하지 않았다. LRU 는 컨테이너 안에서 파일 15000개를 더 써도(write_tags 크기 10039) 처음 쓴 payload 태그가 살아 있어 write_exec_boundary 가 잡았고, 축출을 재현하지 못했다 [VM확인, 한 번]. 커널 LRU 해시가 근사적이라 첫 항목이 남을 수 있다는 가설은 [추론].
+  - 반영: 위 쓰기 태깅 미탐 항목에 [확인필요]·[추론] 으로 표기. 다시 시험하는 것은 v0.2 이후.

@@ -31,11 +31,13 @@
 
 | 필드 | 설명 |
 | --- | --- |
-| `event.kind` | `EXEC` / `WRITE` / `OPEN` / `DNS` / `UNKNOWN` |
+| `event.kind` | `EXEC` / `WRITE` / `OPEN` / `DNS` / `TAG_HIT` / `EXEC_PATH` / `UNKNOWN` |
 | `event.pid` | 이벤트를 일으킨 프로세스 (exec 는 PID 를 유지하므로 pid 만으로 프로세스를 구분하면 안 됨) |
 | `event.cgroup_id` | 이벤트가 발생한 cgroup id |
 | `event.ts_ns` | 발생 시각. 부팅 후 경과 나노초(단조 시계). 벽시계와의 변환은 5주차 |
-| `event.filename` | EXEC 일 때만. 최대 256바이트, 길면 잘림 |
+| `event.filename` | EXEC, TAG_HIT, EXEC_PATH 일 때. exec 요청 이름(`bprm->filename` 또는 execve 인자). 최대 256바이트, 길면 잘림 |
+| `event.final_name`, `event.parent_name`, `event.grandparent_name` | EXEC_PATH 일 때만. `security_bprm_check` 에서 본 실행 파일의 최종 dentry 이름과 부모·조부모 이름. 각 64바이트 칸이라 63바이트에서 잘림. 컨테이너 안 경로는 overlay 기준(`/tmp/payload` → payload, tmp, `/`) |
+| `event.exec_cgroup_id`, `event.tag_ts_ns`, `event.tag_write_count`, `event.dev`, `event.ino` | TAG_HIT 일 때만. TAG_HIT 의 `event.cgroup_id` 는 실행자가 아니라 파일을 쓴 세션의 cgroup 이다 (design-memo-w2 3.2절) |
 
 ## verdict (verdicts.jsonl)
 
@@ -81,6 +83,13 @@ event 의 필드에 더해 다음이 있다. `event` 객체는 판정의 원인�
 ```
 
 (마지막 action 줄은 실제 출력이 아니라, 같은 로그의 `would_kill` 줄을 w3d2 형식으로 손으로 고친 예이다.)
+
+EXEC_PATH 이벤트와 exec_identity 판정 (w4, VM 실제 출력. 링크 위장 `/tmp/bin/ls` → `/tmp/payload` 를 실행한 한 세션):
+
+```json
+{"schema_version":0,"type":"event","session":"20261029-041944-4091788","logged_at_ms":1793215224936,"event":{"kind":"EXEC_PATH","pid":4091924,"cgroup_id":526325,"ts_ns":2923161874631353,"filename":"/tmp/bin/ls","final_name":"payload","parent_name":"tmp","grandparent_name":"/"}}
+{"schema_version":0,"type":"verdict","session":"20261029-041944-4091788","logged_at_ms":1793215224936,"level":"SUSPECT","detector":"exec_identity","reason":"[L] 요청 이름과 다른 실제 파일(임시 위치): 요청 ls, 실제 payload (위치 /tmp)","event":{"kind":"EXEC_PATH","pid":4091924,"cgroup_id":526325,"ts_ns":2923161874631353,"filename":"/tmp/bin/ls","final_name":"payload","parent_name":"tmp","grandparent_name":"/"}}
+```
 
 ## 알려진 한계 (한계 목록에 반영할 것)
 

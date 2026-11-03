@@ -163,7 +163,7 @@
   - 해결: (미해결)
 - [ ] **시작이 거부된 agent-run 도 세션 폴더, by-cgroup 링크, meta.json 이 남고 "세션 시작"이 출력됨** (`run_container.sh`)
   - 이유: 세션 폴더와 by-cgroup 링크, meta.json 은 mycontainer_run 을 부르기 전에 만들어진다. 감시 맵을 못 열거나, 등록하지 못하거나, cgroup 에 합류하지 못하거나, 로더가 없어서 거부되어도 이벤트 없는 세션이 남고 리포트에서 실제 세션과 구분되지 않는다. 남은 by-cgroup 링크는 leak_check 에서 예외로 다룬다.
-  - 비고: 세션 폴더 생성을 확인 뒤로 옮기거나, 거부 사유를 meta.json 에 기록하는 방안. 리포트가 exit_code 와 이벤트 유무로 거르는 것은 임시 대응이 된다.
+  - 비고: 세션 폴더 생성을 확인 뒤로 옮기거나, 거부 사유를 meta.json 에 기록하는 방안. 리포트가 exit_code 와 이벤트 유무로 거르는 것은 임시 대응이 된다. meta.json 에 ended_at 과 exit_code 가 없는 세션도 남는다. (a) run_container.sh 의 bash 가 SIGKILL 로 죽으면 trap 을 쓸 수 없다. (b) set -e 때문에 mycontainer_run 전에 끝나는 경우(예: 네트워크 설정 명령의 실패. run_container.sh:271 의 ip netns add 등)는 EXIT trap 이 없어 cleanup_session 이 돌지 않고, 세션 cgroup, netns, by-cgroup 링크도 남을 수 있다 [추론]. 둘 다 VM 에서 재현하지 못했다 [확인필요]. 리포트에서는 exit_code 가 없는 세션을 "종료 정보 없음" 으로 표시할 계획이다.
   - 시점: w5
   - 해결: (미해결)
 

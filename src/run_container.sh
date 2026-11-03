@@ -25,6 +25,8 @@ NETNS_NAME=""
 MC_STARTED=0
 # 감시 맵의 pin 경로. mycontainer_run.c 의 SESSION_CGROUPS_PIN 과 같은 값이어야 한다 (mycontainer_run 이 이 맵에 세션 cgroup 을 등록한다)
 SESSION_CGROUPS_PIN="/sys/fs/bpf/session_cgroups"
+# meta.json 형식 버전. 로그의 LOG_SCHEMA_VERSION(src/loader/jsonl.h)과 함께 올린다 (자동 연결은 없다)
+META_SCHEMA_VERSION=1
 
 # cgroup id(10진수)를 bpftool 의 "key hex" 뒤에 줄 8바이트 리틀엔디안 hex 로 바꿔 출력한다 (예: 478322 -> 72 4c 07 00 00 00 00 00)
 # run_scenarios.sh 의 map_entry_gone 검사와 같은 방식이다 (그쪽은 bpftool -j 의 JSON 배열 모양을 만들어서 함수를 같이 쓰지 않는다)
@@ -136,10 +138,15 @@ cleanup_session() {
         # jq 의 결과를 변수에 먼저 받는다. 파이프로 바로 쓰면 pipefail 이 없어서 jq 가 실패해도 tee 가 빈 임시 파일을 만들고 그것이 meta.json 을 덮어쓴다
         # if 조건 안이라 jq 가 실패해도 set -e 로 끝나지 않는다. jq 의 오류 메시지는 숨기지 않고 그대로 화면에 낸다
         local new_meta
-        if new_meta="$(jq --arg end "$(date -Is)" --argjson rc "$RC" \
+        # meta.json 은 0600 root 소유라 sudo 로 읽는다
+        if new_meta="$(sudo jq --arg end "$(date -Is)" --argjson rc "$RC" \
                '. + {ended_at:$end, exit_code:$rc}' "$SESSION_DIR/meta.json")" && [[ -n "$new_meta" ]]; then
             # 새 내용을 임시 파일에 쓰고, 쓰기가 성공했을 때만 바꿔 넣는다 (파이프 대신 here-string)
-            if sudo tee "$SESSION_DIR/meta.json.tmp" > /dev/null <<< "$new_meta"; then
+            # 0600: mv 로 바꿔 넣으면 임시 파일의 권한이 meta.json 의 권한이 되므로, 쓰기 전에 임시 파일을 만들고 600 으로 맞춘다
+            # (이미 있는 임시 파일도 chmod 로 맞춰진다. touch 나 chmod 가 실패하면 아래 "쓰기" 실패 분기로 가서 meta.json 은 그대로 둔다)
+            if sudo touch "$SESSION_DIR/meta.json.tmp" \
+                && sudo chmod 600 "$SESSION_DIR/meta.json.tmp" \
+                && sudo tee "$SESSION_DIR/meta.json.tmp" > /dev/null <<< "$new_meta"; then
                 # 바꿔 넣기가 실패해도 정리를 멈추지 않고 RC 로 끝낸다
                 sudo mv "$SESSION_DIR/meta.json.tmp" "$SESSION_DIR/meta.json" || echo "[!] meta.json 갱신 실패 (이동): $SESSION_DIR/meta.json (계속 진행)"
             else
@@ -253,10 +260,24 @@ if [[ "$MODE" == "agent" ]]; then
     sudo mkdir -p "$SESSIONS_ROOT/by-cgroup"
     sudo ln -sfn "../$SESSION_ID" "$SESSIONS_ROOT/by-cgroup/$CGROUP_ID"
 
-    jq -n --arg sid "$SESSION_ID" --argjson cid "$CGROUP_ID" \
+    # 세션 정보(meta.json). jq 의 결과를 변수에 먼저 받는다 (파이프로 바로 쓰면 pipefail 이 없어서 jq 가 실패해도 tee 가 빈 meta.json 을 만든다)
+    # if 조건 안이라 jq 나 쓰기가 실패해도 set -e 로 끝나지 않는다. 경고만 내고 계속 진행한다 (EXIT trap 이 없어서 여기서 끝나면 cgroup 과 링크가 남는다)
+    # 제한값(memory, cpu, pids)은 "max" 같은 문자열이라 --arg 로 넘긴다
+    if new_meta="$(jq -n --arg sid "$SESSION_ID" --argjson cid "$CGROUP_ID" \
             --arg start "$(date -Is)" --arg cmd "${CMD[*]}" \
-            '{session_id:$sid, cgroup_id:$cid, started_at:$start, command:$cmd}' \
-        | sudo tee "$SESSION_DIR/meta.json" > /dev/null
+            --argjson sv "$META_SCHEMA_VERSION" --arg rootfs "$ROOTFS_PATH" --arg cgpath "$CGROUP_PATH" \
+            --arg mem "$MEMORY" --arg cpu "$CPU" --arg pids "$PIDS" \
+            '{session_id:$sid, cgroup_id:$cid, started_at:$start, command:$cmd, schema_version:$sv, rootfs:$rootfs, cgroup_path:$cgpath, limits:{memory:$mem, cpu:$cpu, pids:$pids}}')" \
+        && [[ -n "$new_meta" ]]; then
+        # 0600: 파일을 먼저 만들고 600 으로 맞춘 뒤 내용을 쓴다 (tee 는 기존 파일의 권한을 유지한다)
+        if ! { sudo touch "$SESSION_DIR/meta.json" \
+                && sudo chmod 600 "$SESSION_DIR/meta.json" \
+                && sudo tee "$SESSION_DIR/meta.json" > /dev/null <<< "$new_meta"; }; then
+            echo "[!] meta.json 생성 실패 (쓰기): $SESSION_DIR/meta.json (계속 진행)" >&2
+        fi
+    else
+        echo "[!] meta.json 생성 실패 (jq): $SESSION_DIR (meta.json 없이 계속 진행)" >&2
+    fi
     echo "[*] 세션 시작: $SESSION_ID (cgroup_id=$CGROUP_ID)"
 fi
 

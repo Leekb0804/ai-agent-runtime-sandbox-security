@@ -1,6 +1,6 @@
-# 세션 로그 스키마 (초안, schema_version 0)
+# 세션 로그 스키마 (초안, schema_version 1)
 
-5주차에 스키마를 확정하면서 `schema_version`을 1로 올린다. 그 전에는 필드가 바뀔 수 있다.
+5주차(w5d1)에 schema_version 을 1 로 올렸다. 4주차까지의 출력(초안)은 0 이다. meta.json 과 exit_code 의미 정리가 남아 있어 이 문서는 아직 초안이다.
 
 ## 파일 구조
 
@@ -22,7 +22,7 @@
 
 | 필드 | 타입 | 설명 |
 | --- | --- | --- |
-| `schema_version` | 정수 | 로그 형식 버전 (지금 0) |
+| schema_version | 정수 | 로그 형식 버전 (지금 1. 4주차까지의 출력은 0) |
 | `type` | 문자열 | `event` / `verdict` / `action` |
 | `session` | 문자열 | 세션 ID. 못 찾았으면 `_unattributed` |
 | `logged_at_ms` | 정수 | 로그를 쓴 시각 (벽시계, epoch ms). 이벤트 발생 시각이 아님 |
@@ -76,6 +76,8 @@ event 의 필드에 더해 다음이 있다. `event` 객체는 판정의 원인�
 
 ## 샘플 (실제 코드가 만든 출력)
 
+아래 샘플은 schema_version 0 시점의 출력이라 `"schema_version":0` 이다. 지금 로더는 1 을 쓴다. 문서를 확정할 때 다시 생성해서 교체한다.
+
 ```json
 {"schema_version":0,"type":"event","session":"20261002-115607-1095185","logged_at_ms":1791260904853,"event":{"kind":"EXEC","pid":1095282,"cgroup_id":309013,"ts_ns":2061872220461627,"filename":"/tmp/trigger"}}
 {"schema_version":0,"type":"verdict","session":"20261002-115607-1095185","logged_at_ms":1791260904853,"level":"BLOCK","detector":"dummy_block","reason":"dummy: /tmp/trigger 실행","event":{"kind":"EXEC","pid":1095282,"cgroup_id":309013,"ts_ns":2061872220461627,"filename":"/tmp/trigger"}}
@@ -84,7 +86,7 @@ event 의 필드에 더해 다음이 있다. `event` 객체는 판정의 원인�
 
 (마지막 action 줄은 실제 출력이 아니라, 같은 로그의 `would_kill` 줄을 w3d2 형식으로 손으로 고친 예이다.)
 
-EXEC_PATH 이벤트와 exec_identity 판정 (w4, VM 실제 출력. 링크 위장 `/tmp/bin/ls` → `/tmp/payload` 를 실행한 한 세션):
+EXEC_PATH 이벤트와 exec_identity 판정 (w4, VM 실제 출력. 링크 위장 `/tmp/bin/ls` → `/tmp/payload` 를 실행한 한 세션): (schema_version 0 시점의 출력)
 
 ```json
 {"schema_version":0,"type":"event","session":"20261029-041944-4091788","logged_at_ms":1793215224936,"event":{"kind":"EXEC_PATH","pid":4091924,"cgroup_id":526325,"ts_ns":2923161874631353,"filename":"/tmp/bin/ls","final_name":"payload","parent_name":"tmp","grandparent_name":"/"}}

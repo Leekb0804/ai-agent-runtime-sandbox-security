@@ -41,10 +41,10 @@
 #include "detector.h"
 
 /*
- * 로그 스키마 버전. 0 = 초안(필드가 바뀔 수 있음).
- * 5주차에 로그 스키마를 확정하면서 1 로 올린다.
+ * 로그 스키마 버전. 1 = 5주차에 확정한 첫 버전.
+ * 4주차까지의 로그(초안)는 0 이다.
  */
-#define LOG_SCHEMA_VERSION 0
+#define LOG_SCHEMA_VERSION 1
 
 /* 이벤트 한 줄을 f 에 쓴다. session 은 이 이벤트가 속한 세션 ID. */
 void jsonl_write_event(FILE *f, const char *session,

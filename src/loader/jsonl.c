@@ -5,13 +5,13 @@
  *
  * 한 줄은 이런 조각들이 f 에 차례로 붙어서 완성된다 (verdict 의 경우).
  *
- *   put_head           {"schema_version":0,"type":"verdict","session":"...","logged_at_ms":...
+ *   put_head           {"schema_version":1,"type":"verdict","session":"...","logged_at_ms":...
  *   fprintf/fputs      ,"level":"BLOCK","detector":"...","reason":"..."
  *   put_event_obj      ,"event":{"kind":"EXEC","pid":...,"filename":"..."}
  *   fputs("}\n")       }  와 줄바꿈
  *
  * 공통 머리(head)에는 이런 필드가 들어간다.
- *   schema_version : 로그 형식 버전 (지금은 0 = 초안)
+ *   schema_version : 로그 형식 버전 (지금은 1. 값은 jsonl.h 의 LOG_SCHEMA_VERSION)
  *   type           : event / verdict / action
  *   session        : 세션 ID. 레코드마다 직접 넣는 이유는 cgroup ID 가 세션이 끝나면 사라지기 때문이다
  *   logged_at_ms   : 로그를 "쓴" 시각 (벽시계, epoch 밀리초)

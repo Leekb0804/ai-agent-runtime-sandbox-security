@@ -147,7 +147,7 @@ static int action_record_is(const char *sid, __u64 cg, const char *action, const
                             const char *detail, int err, const char *reason)
 {
     char head[256], tail[512];
-    snprintf(head, sizeof(head), "{\"schema_version\":0,\"type\":\"action\",\"session\":\"%s\",\"logged_at_ms\":", sid);
+    snprintf(head, sizeof(head), "{\"schema_version\":1,\"type\":\"action\",\"session\":\"%s\",\"logged_at_ms\":", sid);
     snprintf(tail, sizeof(tail),
              ",\"cgroup_id\":%llu,\"action\":\"%s\",\"result\":\"%s\",\"detail\":\"%s\",\"errno\":%d,\"reason\":\"%s\"}",
              (unsigned long long)cg, action, result, detail, err, reason);

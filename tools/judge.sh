@@ -50,7 +50,7 @@
 #   - bash : 인자 확인, 파일 목록 만들기, 종료 코드 정하기. 대부분의 줄이 이쪽이다.
 #   - jq   : JSON 을 읽고 조건을 계산하는 별도의 작은 언어. 작은따옴표 '...' 안에 들어 있는 부분이다.
 # jq 부분 (아래 RESULT=$( 로 시작하는 큰 덩어리)은 처음에는 "로그 줄을 세어 기대와 비교하는 상자"로 보고 넘어가도 된다.
-# 이 파일이 맞게 동작한다는 증거는 코드를 눈으로 읽는 것보다 tools/test_judge.sh 의 16개 테스트이다.
+# 이 파일이 맞게 동작한다는 증거는 코드를 눈으로 읽는 것보다 tools/test_judge.sh 의 테스트이다.
 # 전체 흐름: 인자 확인 -> expect.json 형식 검증 -> 읽을 로그 파일 목록 만들기 -> jq 로 검사별 개수 비교 -> 종료 코드 정하기
 # set -u : 값이 정해지지 않은 변수를 쓰면 오류로 즉시 멈춘다. 변수 이름을 잘못 쓰는 실수를 일찍 잡으려는 설정이다.
 #          그래서 아래처럼 인자를 받을 때는 "${1:-}" 처럼 기본값을 함께 쓴다.
@@ -169,7 +169,7 @@ fi
 #
 # flat : 로그 레코드를 비교하기 쉽게 한 단계 평평하게 만든다.
 #        event 레코드와 verdict 레코드는 filename, kind 가 .event 아래에 있고 action 레코드에는 .event 가 없다.
-#        result 는 action 레코드(종료 시도의 결과: sent / already_gone / failed / skipped)에만 있다.
+#        result 는 action 레코드(종료 시도의 결과: sent / already_gone / failed / skipped, 관찰 모드에서는 not_sent)에만 있다.
 #        flat 에 없는 필드(예: detail, errno)는 expect 의 match 에 써도 항상 null 이라 매칭되지 않는다.
 #        없는 필드는 null 이 되어 어떤 값과도 같지 않다.
 # matches : 레코드가 match 의 모든 키-값을 만족하는가

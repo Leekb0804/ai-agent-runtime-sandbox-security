@@ -11,8 +11,10 @@ AI 코딩 에이전트에게 셸 실행 권한을 줄 때, 애플리케이션 �
 
 | 되는 것 | 아직 안 되는 것 |
 | --- | --- |
-| 컨테이너(세션) 안의 `execve` 를 커널에서 관측해서 세션별 로그로 기록 | 실제 탐지기 (지금은 동작 확인용 더미 탐지기 2개) |
-| 탐지기를 파일 하나로 추가하는 구조 (디스패처, 판정 수집기) | 쓰기→실행 탐지, 경로 비교 탐지 (2~4주차 예정) |
+| 컨테이너(세션) 안의 `execve` 를 커널에서 관측해서 세션별 로그로 기록 | 세션 리포트 (SUSPECT/BLOCK 사후 검토용, 5주차 예정) |
+| 탐지기를 파일 하나로 추가하는 구조 (디스패처, 판정 수집기) | |
+| 쓰기→실행 탐지 `write_exec_boundary`: 세션이 쓴 파일을 세션 밖에서 실행하면, 쓴 지 10분 이내는 BLOCK, 10분이 지나면 SUSPECT. 같은 세션 안 실행은 SUSPECT | |
+| 실행 정체성 탐지 `exec_identity`: 메모리(memfd)에서 실행(규칙 M), `/tmp`·`/var/tmp` 바로 아래 파일을 다른 이름으로 실행(규칙 L)을 SUSPECT | |
 | 시나리오를 실제로 돌려서 PASS/FAIL 을 내는 회귀 테스트 | |
 | BLOCK 이면 세션 cgroup 을 `cgroup.kill` 로 종료하는 kill switch. 결과는 action 레코드의 `result` (`sent` / `already_gone` / `failed` / `skipped`, 관찰 모드에서는 `not_sent`) | |
 | 평가용 관찰 모드 `--no-kill` (BLOCK 을 기록만 하고 세션은 종료하지 않음) | |
@@ -32,8 +34,8 @@ sudo ./run_container.sh agent-run -- /bin/sh -c '/bin/ls /'   # 터미널 2: 세
 ```
 
 로더 인자: `myc_loader [세션 루트] [--detectors=이름,이름,...] [--no-kill]` (순서 상관없음).
-`--detectors` 를 생략하면 시험용이 아닌 탐지기(`write_exec_boundary`)만 켭니다. 더미 탐지기는 이름으로 명시해야 켜집니다
-(예: `sudo ./myc_loader --detectors=dummy_block,dummy_suspect,write_exec_boundary`. 러너는 이 목록으로 띄웁니다).
+`--detectors` 를 생략하면 시험용이 아닌 탐지기(`exec_identity`, `write_exec_boundary`)를 모두 켭니다. 더미 탐지기는 이름으로 명시해야 켜집니다
+(예: `sudo ./myc_loader --detectors=dummy_block,dummy_suspect,exec_identity,write_exec_boundary`. 러너는 이 네 탐지기를 켜고 띄웁니다).
 켜진 목록과 모드는 시작할 때 `[loader] ready (... mode: kill, detectors: ...)` 줄에 나옵니다. 잘못된 인자는 시작하지 않고 종료 코드 2 로 끝납니다.
 
 `--no-kill` 은 **평가용 관찰 모드**입니다 (예: 오탐 측정). BLOCK 이어도 세션을 종료하지 않고, `verdicts.jsonl` 에
@@ -49,6 +51,8 @@ sudo ./run_container.sh agent-run -- /bin/sh -c '/bin/ls /'   # 터미널 2: 세
 ```bash
 tools/test_judge.sh          # 판정 로직 (root 불필요)
 tools/test_runner.sh         # 러너 흐름, 가짜 로더 사용 (root 불필요)
+tools/test_leak_check.sh     # 누수 점검기의 compare 판정, 가짜 스냅샷 사용 (root 불필요. snapshot, selftest 는 root 필요, VM 에서 확인)
+tools/test_live_latency.sh   # B안 지연 도구의 로그 파서와 요약 (root 불필요)
 sudo ./run_scenarios.sh      # 진짜 로더와 컨테이너로 전체 시나리오
 ```
 

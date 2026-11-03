@@ -8,12 +8,12 @@
 
 | 시나리오 | BLOCK (write_exec_boundary) | SUSPECT (write_exec_boundary) | SUSPECT (exec_identity) | 비고 |
 | --- | --- | --- | --- | --- |
-| n01_compile_run | 0 | 1 | 0 | gcc 로 컴파일한 뒤 같은 세션에서 `./hello` 를 실행한 것이 SUSPECT 1. 이벤트 10줄, 판정/대응 10줄 |
+| n01_compile_run | 0 | 1 | 0 | gcc 로 컴파일한 뒤 같은 세션에서 `./hello` 를 실행한 것이 SUSPECT 1. 이벤트 19줄 (EXEC_PATH 포함, w5d1 VM 전체 회귀 실측 한 번), 판정/대응 10줄 (w5d1 에도 같음) |
 | n02 (npm install) | - | - | - | 보류. 이 릴리스의 개발 rootfs 에서 nodejs/npm 설치가 되지 않아 제외했다 |
-| n03_pip_install_local | 0 | 2 | 0 | venv 가 쓴 `bin/pip` 과 pip 이 쓴 콘솔 스크립트 `bin/n03tool` 의 실행이 각 한 번씩 SUSPECT. 이벤트 20줄, 판정/대응 20줄 |
-| n04_git_clone_make | 0 | 1 | 0 | 로컬 clone 뒤 make 로 빌드한 `./hello` 의 실행이 SUSPECT 1 (git 내부 실행 파일과 make 가 부른 gcc 는 SUSPECT 를 내지 않음). 이벤트 19줄, 판정/대응 19줄 |
-| n05_script_exec | 0 | 1 | 0 | 같은 세션에서 쓰고 chmod +x 한 `./n05_task.sh` 의 직접 실행이 SUSPECT 1. 이벤트 7줄, 판정/대응 7줄 |
-| n06_host_runs_output | 1 | 0 | 0 | 알려진 오탐. 세션이 끝난 뒤 호스트가 컨테이너가 빌드한 결과물을 직접 실행해 write_exec_boundary 가 BLOCK (종료 시도는 already_gone 1). 컨테이너 안에서는 빌드한 파일을 실행하지 않아 SUSPECT 0. 이벤트 9줄, 판정/대응 10줄 |
+| n03_pip_install_local | 0 | 2 | 0 | venv 가 쓴 `bin/pip` 과 pip 이 쓴 콘솔 스크립트 `bin/n03tool` 의 실행이 각 한 번씩 SUSPECT. 이벤트 36줄 (EXEC_PATH 포함, w5d1 VM 실측 한 번), 판정/대응 20줄 (w5d1 에도 같음) |
+| n04_git_clone_make | 0 | 1 | 0 | 로컬 clone 뒤 make 로 빌드한 `./hello` 의 실행이 SUSPECT 1 (git 내부 실행 파일과 make 가 부른 gcc 는 SUSPECT 를 내지 않음). 이벤트 37줄 (EXEC_PATH 포함, w5d1 VM 전체 회귀 실측 한 번), 판정/대응 19줄 (w5d1 에도 같음) |
+| n05_script_exec | 0 | 1 | 0 | 같은 세션에서 쓰고 chmod +x 한 `./n05_task.sh` 의 직접 실행이 SUSPECT 1. 이벤트 14줄 (EXEC_PATH 포함, w5d1 VM 실측 한 번), 판정/대응 7줄 (w5d1 에도 같음) |
+| n06_host_runs_output | 1 | 0 | 0 | 알려진 오탐. 세션이 끝난 뒤 호스트가 컨테이너가 빌드한 결과물을 직접 실행해 write_exec_boundary 가 BLOCK (종료 시도는 already_gone 1). 컨테이너 안에서는 빌드한 파일을 실행하지 않아 SUSPECT 0. 이벤트 17줄 (EXEC_PATH 포함, w5d1 VM 실측 한 번), 판정/대응 10줄 (w5d1 에도 같음) |
 
 BLOCK 과 SUSPECT 는 열 이름의 탐지기 판정만 센 값이다. dummy_suspect 판정은 세지 않는다 (아래 "읽는 법").
 
@@ -21,8 +21,8 @@ BLOCK 과 SUSPECT 는 열 이름의 탐지기 판정만 센 값이다. dummy_sus
 
 - **SUSPECT**: write_exec_boundary 의 "같은 세션 안 실행, 쓴 지 N초 이내" 판정이다. 세션이 쓴 파일을 같은 세션이 실행했다는 기록일 뿐이고, 세션은 종료하지 않는다. 위 표의 SUSPECT 가 있는 시나리오(n01, n03, n04, n05)는 모두 종료 대응이 0건이다 (`{"type":"action"}` 기대 0).
 - **BLOCK**: write_exec_boundary 의 "세션 밖 실행" 판정이다. 세션이 쓴 파일을 그 세션 밖(호스트 등)이 실행하면 낸다. BLOCK 이면 로더가 그 세션의 종료를 시도하고 결과를 대응(action) 기록으로 남긴다.
-- **이벤트 줄 수, 판정/대응 줄 수**: 참고용이다. 빌드 도구마다 내부에서 실행하는 프로그램 수가 달라 시나리오끼리 비교하는 값이 아니다. 줄 수는 3주차 측정값이다 (4주차에는 EXEC_PATH 이벤트가 더해져 달라졌을 것이다 [추론]).
-  - 러너는 시험용 더미 탐지기 dummy_suspect 와 exec_identity 도 켠다 (`run_scenarios.sh` 의 `RUNNER_DETECTORS`). dummy_suspect 는 모든 EXEC 에 SUSPECT 를 내므로 판정/대응 줄 수에는 그 판정이 섞여 있다. 그래서 표의 SUSPECT 는 열마다 detector 로 거른 값이다 (expect.json 도 같은 방식으로 거른다).
+- **이벤트 줄 수, 판정/대응 줄 수**: 참고용이다. 빌드 도구마다 내부에서 실행하는 프로그램 수가 달라 시나리오끼리 비교하는 값이 아니다. 이벤트 줄 수는 w5d1 VM 에서 잰 값이고(EXEC_PATH 포함), 두 번의 실행에서 나왔다: n01·n04 는 전체 회귀 실행 한 번, n03·n05·n06 은 그 뒤 따로 돌린 실행 한 번이다. n03·n05·n06 은 3주차 값과의 차이가 각 세션의 EXEC_PATH 줄 수와 같음을 세션 로그에서 세어 확인했다. n01·n04 는 세션 로그를 보관하지 않아 이 차이를 확인하지 못했다 [확인필요]. 판정/대응 줄 수는 3주차 값과 같다.
+  - 러너는 시험용 더미 탐지기 dummy_block, dummy_suspect 와 exec_identity 도 켠다 (`run_scenarios.sh` 의 `RUNNER_DETECTORS`). dummy_suspect 는 모든 EXEC 에 SUSPECT 를 내므로 판정/대응 줄 수에는 그 판정이 섞여 있다. 그래서 표의 SUSPECT 는 열마다 detector 로 거른 값이다 (expect.json 도 같은 방식으로 거른다).
 
 ## 알려진 오탐
 

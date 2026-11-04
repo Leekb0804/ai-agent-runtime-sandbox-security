@@ -78,6 +78,19 @@ static void run(const struct evt_exec_path *e, size_t len)
     dispatch_event(e, len);
 }
 
+/*
+ * reason 의 계약 문구 (docs/log-schema-draft.md 의 "reason 의 계약"). 탐지기 소스에서 가져오지 않고 여기 따로 적는다.
+ * is_suspect 는 규칙 표시가 이유 어디에 있어도 맞으므로, 맨 앞부터의 문구는 starts_with 로 따로 본다.
+ */
+#define PREFIX_M "[M] 메모리에서 실행(memfd): 요청 "
+#define PREFIX_L "[L] 요청 이름과 다른 실제 파일(임시 위치): 요청 "
+
+/* s 가 접두어 p 로 시작하는가 (앞에서부터 문구 전체를 맞춘다) */
+static int starts_with(const char *s, const char *p)
+{
+    return strncmp(s, p, strlen(p)) == 0;
+}
+
 /* 판정이 정확히 하나이고 exec_identity 의 SUSPECT 이며 이유에 tag 가 있는가 */
 static int is_suspect(const char *tag)
 {
@@ -97,6 +110,9 @@ static void test_rule_m(void)
     CHECK(is_suspect("[M]"), "M(a) 경로 문자열 실행 /proc/self/fd/3 -> SUSPECT [M]");
     CHECK(strstr(last_reason, "요청 /proc/self/fd/3") && strstr(last_reason, "실제 memfd:x"),
           "M(a) 이유에 요청 이름과 실제 이름이 들어감");
+    CHECK(starts_with(last_reason, PREFIX_M), "M(a) 이유는 '[M] 메모리에서 실행(memfd): 요청 ' 로 시작");
+    CHECK(strcmp(last_reason, "[M] 메모리에서 실행(memfd): 요청 /proc/self/fd/3, 실제 memfd:x") == 0,
+          "M(a) 이유가 '[M] 메모리에서 실행(memfd): 요청 /proc/self/fd/3, 실제 memfd:x' 와 정확히 같음");
 
     e = make_ep("/dev/fd/3", "memfd:x", "memfd:x", "memfd:x");
     run(&e, sizeof(e));
@@ -143,6 +159,7 @@ static void test_rule_l(void)
     e = make_ep("/tmp/bin/ls", "payload", "tmp", "/");
     run(&e, sizeof(e));
     CHECK(is_suspect("[L]"), "L(a) /tmp/bin/ls -> /tmp/payload: SUSPECT [L]");
+    CHECK(starts_with(last_reason, PREFIX_L), "L(a) 이유는 '[L] 요청 이름과 다른 실제 파일(임시 위치): 요청 ' 로 시작");
     CHECK(strcmp(last_reason, "[L] 요청 이름과 다른 실제 파일(임시 위치): 요청 ls, 실제 payload (위치 /tmp)") == 0,
           "L(a) 이유가 '요청 ls, 실제 payload (위치 /tmp)' 문구와 정확히 같음");
     CHECK(strstr(last_reason, "요청 ls,") && !strstr(last_reason, "/tmp/bin"),
@@ -151,6 +168,8 @@ static void test_rule_l(void)
     e = make_ep("/var/tmp/ls", "p", "tmp", "var");
     run(&e, sizeof(e));
     CHECK(is_suspect("[L]") && strstr(last_reason, "(위치 /var/tmp)"), "L(b) /var/tmp 아래 다른 이름 -> SUSPECT [L] (위치 /var/tmp)");
+    CHECK(strcmp(last_reason, "[L] 요청 이름과 다른 실제 파일(임시 위치): 요청 ls, 실제 p (위치 /var/tmp)") == 0,
+          "L(b) 이유가 '요청 ls, 실제 p (위치 /var/tmp)' 문구와 정확히 같음");
 
     e = make_ep("./hello", "hello", "tmp", "/");
     run(&e, sizeof(e));

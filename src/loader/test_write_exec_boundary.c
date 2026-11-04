@@ -52,6 +52,20 @@ static void reset_sink(void)
 }
 
 /*
+ * reason 의 계약 문구 (docs/log-schema-draft.md 의 "reason 의 계약"). 탐지기 소스에서 가져오지 않고 여기 따로 적는다.
+ * 탐지기의 문구가 바뀌면 이 시험이 FAIL 해서 계약을 함께 고치게 한다.
+ */
+#define PREFIX_BLOCK   "세션 밖 실행, 쓴 지 "
+#define PREFIX_EXPIRED "세션 밖 실행, 태그 만료, 쓴 지 "
+#define PREFIX_SAME    "같은 세션 안 실행, 쓴 지 "
+
+/* s 가 접두어 p 로 시작하는가 (앞에서부터 문구 전체를 맞춘다) */
+static int starts_with(const char *s, const char *p)
+{
+    return strncmp(s, p, strlen(p)) == 0;
+}
+
+/*
  * 합성 TAG_HIT. exec_cg 는 실행한 쪽의 cgroup, elapsed_ns 는 쓴 뒤 지난 시간이다.
  * 헤더 cgroup_id 는 쓴 세션(OWNER_CG)이다. memset 으로 패딩과 filename 의 남은 영역을 0 으로 채운다.
  */
@@ -88,6 +102,7 @@ static void test_decision(void)
     CHECK(strcmp(last_detector, "write_exec_boundary") == 0, "판정에 탐지기 이름이 채워짐");
     CHECK(strstr(last_reason, "/var/lib/x/upper/tmp/trigger") != NULL, "이유에 파일 경로가 들어감");
     CHECK(strstr(last_reason, "1.000") != NULL, "이유에 경과 시간(1.000초)이 들어감");
+    CHECK(starts_with(last_reason, PREFIX_BLOCK), "BLOCK 이유는 '세션 밖 실행, 쓴 지 ' 로 시작");
 
     /* 같은 세션 안 실행 -> SUSPECT */
     reset_sink();
@@ -95,6 +110,7 @@ static void test_decision(void)
     dispatch_event(&e, sizeof(e));
     CHECK(sink_count == 1 && last_level == V_SUSPECT, "같은 세션 안 실행은 SUSPECT");
     CHECK(strstr(last_reason, "같은 세션") != NULL, "이때 이유는 '같은 세션 안 실행'");
+    CHECK(starts_with(last_reason, PREFIX_SAME), "같은 세션 이유는 '같은 세션 안 실행, 쓴 지 ' 로 시작");
 
     /* 세션 밖이지만 11분 지남 -> SUSPECT (태그 만료) */
     reset_sink();
@@ -102,6 +118,8 @@ static void test_decision(void)
     dispatch_event(&e, sizeof(e));
     CHECK(sink_count == 1 && last_level == V_SUSPECT, "세션 밖이라도 만료(11분)면 SUSPECT");
     CHECK(strstr(last_reason, "태그 만료") != NULL, "이때 이유는 '태그 만료'");
+    CHECK(starts_with(last_reason, PREFIX_EXPIRED), "만료 이유는 '세션 밖 실행, 태그 만료, 쓴 지 ' 로 시작");
+    CHECK(!starts_with(last_reason, PREFIX_BLOCK), "만료 이유는 BLOCK 접두어로 시작하지 않음 (앞의 '세션 밖 실행, ' 만 같음)");
 
     /* 경계: 정확히 10분은 아직 유효 -> BLOCK, 1ns 넘으면 만료 -> SUSPECT */
     reset_sink();
@@ -122,6 +140,20 @@ static void test_decision(void)
     dispatch_event(&e, sizeof(e));
     CHECK(sink_count == 1 && last_level == V_BLOCK, "태그 시각이 미래여도 넘치지 않고 BLOCK");
     CHECK(strstr(last_reason, "0.000") != NULL, "이때 경과 시간은 0.000초로 표시됨");
+
+    /* 밀리초 자리: 1.234567890초 -> 밀리초 아래는 버리고 3자리로 표시 */
+    reset_sink();
+    e = make_hit(OTHER_CG, 1234567890ULL, "/tmp/ms");
+    dispatch_event(&e, sizeof(e));
+    CHECK(sink_count == 1 && strcmp(last_reason, "세션 밖 실행, 쓴 지 1.234초: /tmp/ms") == 0,
+          "1.234567890초는 이유 전체가 '세션 밖 실행, 쓴 지 1.234초: /tmp/ms' 와 정확히 같음");
+
+    /* 밀리초 0 채움: 1.005초 -> 밀리초 5 는 '005' 로 표시 (0 채움이 없으면 1.5 가 된다) */
+    reset_sink();
+    e = make_hit(OTHER_CG, 1005000000ULL, "/tmp/ms0");
+    dispatch_event(&e, sizeof(e));
+    CHECK(sink_count == 1 && strcmp(last_reason, "세션 밖 실행, 쓴 지 1.005초: /tmp/ms0") == 0,
+          "1.005초는 이유 전체가 '세션 밖 실행, 쓴 지 1.005초: /tmp/ms0' 와 정확히 같음 (밀리초 0 채움)");
 }
 
 /* ===================== 테스트 2: 무시해야 하는 이벤트 ===================== */
@@ -158,6 +190,20 @@ static void test_long_filename(void)
     dispatch_event(&e, sizeof(e));
     CHECK(sink_count == 1 && last_level == V_BLOCK, "NUL 없는 긴 이름도 판정이 나옴");
     CHECK(strlen(last_reason) == sizeof(last_reason) - 1, "이유는 128바이트에서 NUL 로 끝나게 잘림");
+
+    /* 잘림 위치: 고정 부분(37바이트) 뒤에 경로 'A' 가 정확히 90개 남는다 (37 + 90 = 127) */
+    char want[128];
+    snprintf(want, sizeof(want), "%s", "세션 밖 실행, 쓴 지 1.000초: ");
+    size_t plen = strlen(want);
+    CHECK(starts_with(last_reason, want), "잘려도 앞부분은 '세션 밖 실행, 쓴 지 1.000초: ' 그대로");
+    int fits = plen + 90 < sizeof(want);            /* 'A' 90개와 NUL 이 want 안에 들어가는가 */
+    CHECK(fits, "잘림 위치 시험의 버퍼가 넘치지 않음");
+    if (fits) {
+        memset(want + plen, 'A', 90);
+        want[plen + 90] = '\0';
+    }
+    CHECK(plen + 90 == sizeof(want) - 1 && strcmp(last_reason, want) == 0,
+          "고정 부분 뒤에 경로 'A' 가 정확히 90개 남고 전체 127바이트");
 }
 
 int main(void)

@@ -13,6 +13,7 @@
 #   expect_text "<설명>" "<문구>"                         : 바로 앞 check 의 출력에 문구가 있어야 한다
 #   expect_no_text "<설명>" "<문구>"                      : 바로 앞 check 의 출력에 문구가 없어야 한다
 #   expect_text_after "<설명>" "<첫째>" "<둘째>" [줄 수]  : 첫째 문구가 처음 나온 줄부터 N줄(기본 12) 안에 둘째 문구가 있어야 한다
+#   expect_no_text_in_item "<설명>" "<첫째>" "<문구>"     : 첫째 문구가 처음 나온 줄부터 다음 판정 항목("- [")이 시작하기 전까지 문구가 없어야 한다
 #
 # 사용법: tools/test_report.sh   (전부 통과하면 ALL PASSED, 종료 코드 0)
 
@@ -107,6 +108,26 @@ expect_text_after() {
     else
         # 실패 줄과 두 문구, 줄 수
         printf '  FAIL  %s ("%s" 부터 %s줄 안에 "%s" 가 없음)\n' "$msg" "$first" "$n" "$second"
+        # 리포트 출력을 들여써서 보여 준다
+        sed 's/^/        /' "$OUT"
+        # 실패 수를 늘린다
+        failures=$((failures + 1))
+    fi
+}
+
+# 바로 앞 check 의 출력에서 첫째 문구가 처음 나온 줄부터 다음 판정 항목 제목 전까지 문구가 없는지 확인한다 (항목 안 음성 검사)
+expect_no_text_in_item() {
+    # 설명, 첫째 문구, 없어야 할 문구, 첫째 문구의 줄 번호
+    local msg="$1" first="$2" text="$3" at
+    # 첫째 문구가 처음 나온 줄 번호
+    at="$(grep -nF -- "$first" "$OUT" | head -n 1 | cut -d: -f1)"
+    # 첫째 문구가 있고, 그 줄부터 다음 "- [" 줄 전까지(awk 로 자름)에 문구가 없으면 통과
+    if [[ -n "$at" ]] && ! awk -v s="$at" 'NR == s { p = 1 } NR > s && /^- \[/ { exit } p' "$OUT" | grep -qF -- "$text"; then
+        # 통과 줄
+        printf '  PASS  %s\n' "$msg"
+    else
+        # 실패 줄과 두 문구 (첫째 문구가 없어도 실패로 본다)
+        printf '  FAIL  %s ("%s" 항목 안에 "%s" 가 있거나 항목을 찾지 못함)\n' "$msg" "$first" "$text"
         # 리포트 출력을 들여써서 보여 준다
         sed 's/^/        /' "$OUT"
         # 실패 수를 늘린다
@@ -440,6 +461,102 @@ expect_text "읽지 못한 로더 로그는 알 수 없음" "로더 로그를 �
 check "시나리오 이름을 준 리포트" 0 "$TMP/linked" --scenario s04_write_exec_live
 # 머리에 시나리오 이름
 expect_text "시나리오 이름이 머리에 보임" "- 시나리오: s04_write_exec_live"
+
+# ---------- 실제 로더 출력 fixture (schema_version 1, w5d1 VM) ----------
+# real_w5_n03, n06, s04, s08 은 w5d1 VM 의 한 번의 러너 실행(로더 실행 하나)이 남긴 세션 폴더를 그대로 복사한 것이다.
+# real_w5_loader.err 는 그 로더 실행의 표준 오류다. real_w5_s00 은 다른 로더 실행의 세션이라 이 로더 로그에 해당하지 않는다.
+# 파일 내용은 한 글자도 바꾸지 않았다 (개인·환경 문자열도 그대로).
+echo "[실제 출력 fixture: n03 (같은 세션 SUSPECT 둘)]"
+# n03 리포트
+check "n03 리포트를 만든다" 0 "$FIX/real_w5_n03"
+# 건수 줄
+expect_text "n03 실제 탐지기 판정 2건" "- 실제 탐지기 판정 2건"
+# 첫 항목
+expect_text "n03 항목 [1]" "- [1]"
+# 둘째 항목
+expect_text "n03 항목 [2]" "- [2]"
+# 같은 세션 표시
+expect_text "n03 같은 세션 표시" "(같음: 같은 세션 안 실행)"
+# dummy 제외 건수
+expect_text "n03 dummy 판정 18건 제외" "dummy 판정 18건 제외"
+# 이벤트 종류별 개수
+expect_text "n03 이벤트 개수" "EXEC 18, EXEC_PATH 16, TAG_HIT 2"
+# exit_code
+expect_text "n03 exit_code 0" "- exit_code: 0"
+# 시나리오 이름을 주지 않았다
+expect_text "n03 시나리오 알 수 없음" "- 시나리오: 알 수 없음"
+# BLOCK 이 없으니 판정 항목 아래 종료 대응 줄도 없다 (세션 정보의 주의 문구에도 "종료 대응" 이 들어 있어 항목 줄 모양으로 찾는다)
+expect_no_text "n03 종료 대응 없음" "  - 종료 대응"
+
+echo "[실제 출력 fixture: n06 (알려진 오탐 BLOCK + already_gone)]"
+# n06 리포트
+check "n06 리포트를 만든다" 0 "$FIX/real_w5_n06"
+# BLOCK 수준 문구
+expect_text "n06 BLOCK 수준" "수준: BLOCK (사후 종료 요청, 실행을 막지 못함)"
+# 세션 밖 실행 표시
+expect_text "n06 다름 표시" "(다름: 세션 밖 실행)"
+# 종료 대응
+expect_text "n06 종료 대응 already_gone" "종료 대응: kill/already_gone (enoent, errno 2)"
+# 종료 대응 설명
+expect_text "n06 already_gone 설명" "종료 대상이 이미 없었다"
+# dummy 제외 건수
+expect_text "n06 dummy 판정 8건 제외" "dummy 판정 8건 제외"
+# 종료 대응이 [1] 항목 안에 있다
+expect_text_after "n06 종료 대응이 [1] 안에 있음" "- [1]" "종료 대응: kill/already_gone"
+# 같은 로더 실행의 로그를 준다
+check "n06 리포트에 로더 로그를 준다" 0 "$FIX/real_w5_n06" --loader-log "$FIX/real_w5_loader.err"
+# 로더 실행 전체의 값
+expect_text "n06 로더 로그 값" "lost=0, 드롭 exec=0 tag_hit=0 exec_path=0"
+# 이 세션만의 값이 아니라는 안내
+expect_text "n06 로더 값은 세션만의 값이 아님" "이 세션만의 값이 아님"
+
+echo "[실제 출력 fixture: s04 (BLOCK + kill/sent, exit_code 137)]"
+# s04 리포트
+check "s04 리포트를 만든다" 0 "$FIX/real_w5_s04"
+# 종료 대응
+expect_text "s04 종료 대응 sent" "종료 대응: kill/sent (written, errno 0)"
+# 종료 대응 설명
+expect_text "s04 sent 설명" "세션 종료를 요청했다"
+# exit_code 137
+expect_text "s04 exit_code 137" "- exit_code: 137"
+# exit_code 해석 주의
+expect_text "s04 exit_code 주의 문구" "exit_code 의 값만으로는 종료 원인을 가릴 수 없다"
+
+echo "[실제 출력 fixture: s08 (exec_identity [L] + 같은 세션 SUSPECT)]"
+# s08 리포트
+check "s08 리포트를 만든다" 0 "$FIX/real_w5_s08"
+# 건수 줄
+expect_text "s08 실제 탐지기 판정 2건" "- 실제 탐지기 판정 2건"
+# exec_identity 판정
+expect_text "s08 exec_identity 판정" "탐지기: exec_identity"
+# write_exec_boundary 판정
+expect_text "s08 write_exec_boundary 판정" "탐지기: write_exec_boundary"
+# [L] 이유 그대로
+expect_text "s08 [L] 이유 그대로" "이유: [L] 요청 이름과 다른 실제 파일(임시 위치): 요청 ls, 실제 payload (위치 /tmp)"
+# 실제 실행 파일 이름
+expect_text "s08 실제 실행 파일 이름" "실제 실행 파일 이름: payload"
+# 위치
+expect_text "s08 위치" "위치 (부모 / 조부모): tmp / /"
+# 실제 실행 파일 이름이 exec_identity 항목 안에 있다
+expect_text_after "s08 실제 이름이 exec_identity 항목 안에 있음" "탐지기: exec_identity" "실제 실행 파일 이름: payload" 6
+# exec_identity 항목 안에는 같음 표시가 없다 (TAG_HIT 판정의 같음 표시는 다른 항목에 있다)
+expect_no_text_in_item "s08 exec_identity 항목에 같음 표시 없음" "탐지기: exec_identity" "(같음"
+# exec_identity 항목 안에는 다름 표시가 없다
+expect_no_text_in_item "s08 exec_identity 항목에 다름 표시 없음" "탐지기: exec_identity" "(다름"
+
+echo "[실제 출력 fixture: s00 (실제 판정 0건, 다른 로더 실행)]"
+# s00 리포트
+check "s00 리포트를 만든다" 0 "$FIX/real_w5_s00"
+# 0건
+expect_text "s00 실제 탐지기 판정 0건" "실제 탐지기 판정 0건"
+# 관측은 있었다
+expect_text "s00 관측은 있었다" "관측은 있었다 (이벤트 6줄)"
+# 폴더 이름이 meta.json 의 세션 ID 와 다르다
+expect_text "s00 폴더 이름 표시" "폴더 이름: real_w5_s00"
+# dummy 제외 건수
+expect_text "s00 dummy 판정 3건 제외" "dummy 판정 3건 제외"
+# 판정 항목이 없다
+expect_no_text "s00 판정 항목 없음" "- [1]"
 
 # 결과 요약
 echo

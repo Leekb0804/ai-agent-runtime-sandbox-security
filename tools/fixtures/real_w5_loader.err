@@ -1,0 +1,10 @@
+[dispatcher] 등록된 탐지기 4개
+  - dummy_block (kinds=0x00000002)
+  - dummy_suspect (kinds=0x00000002)
+  - exec_identity (kinds=0x00000040)
+  - write_exec_boundary (kinds=0x00000020)
+[loader] ready (sessions root: /tmp/myc_scen.Ah1ol5/sessions, mode: kill, detectors: dummy_block,dummy_suspect,exec_identity,write_exec_boundary)
+[kill] 세션 20261104-015541-252259 (cgroup 541283) result=already_gone detail=enoent errno=2: 세션 밖 실행, 쓴 지 0.618초: /var/lib/mycontainer/containers/mycontainer-252259/upper/tmp/hello
+[kill] 세션 20261104-015543-252515 (cgroup 541334) result=sent detail=written errno=0: 세션 밖 실행, 쓴 지 0.017초: /var/lib/mycontainer/containers/mycontainer-252515/upper/tmp/payload
+[loader] log stats: writes=137 slow(>5ms)=0 max=15us lost=0
+[loader] ring buffer drops: exec=0 tag_hit=0 exec_path=0

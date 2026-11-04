@@ -139,7 +139,7 @@
   - 시점: w5
   - 해결: (미해결)
 - [x] **러너의 시간 초과(60초) 경로가 에이전트를 종료하지 못하고 격리 자원을 정리하지 않음**
-  - 이유: AGENT_TIMEOUT_S(60초, 상수) 로 timeout 이 run_container.sh 를 끊으면, run_container.sh 에 trap 이 없고 mycontainer_run 에 신호 처리기가 없어 정리 코드가 돌지 않는다(수정 전 기준. 현재 src/run_container.sh:303-311, 86-156, src/mycontainer_run.c:566-573). 그 결과 세션 cgroup, netns, 호스트 veth, nsfs 마운트, 감시 맵 항목, state 파일이 남고 meta.json 에 exit_code 가 기록되지 않는다. VM 실측(w3d2): 컨테이너 안에서 sleep 600 을 실행하고 timeout 15 로 끊었을 때 종료 코드 124, 위 자원이 모두 남았고 점검기 compare 가 cgroup_dirs, netns, veth, mounts, procs, map_entries, state_files 일곱 행을 FAIL 로 잡았다. 에이전트 프로세스도 살아남았다: sleep 이 컨테이너 PID 1 이라 timeout 이 보낸 TERM 을 무시했다(NSpid 끝 1, 부모 init). 제품의 agent-run 자체에는 시간 초과가 없고 이 timeout 은 러너가 붙인 안전장치이므로, 영향은 시나리오가 멈췄을 때 러너가 에이전트와 격리 자원을 치우지 못하는 것이다. 한 번의 실측이며 PID 1 이 sh 인 여러 명령 스크립트에서의 동작은 확인하지 못했다.
+  - 이유: AGENT_TIMEOUT_S(60초, 상수) 로 timeout 이 run_container.sh 를 끊으면, run_container.sh 에 trap 이 없고 mycontainer_run 에 신호 처리기가 없어 정리 코드가 돌지 않는다(수정 전 기준. 현재는 run_container.sh 의 mycontainer_run 호출부와 cleanup_session, mycontainer_run.c 의 waitpid 뒤 remove_state_file 호출까지). 그 결과 세션 cgroup, netns, 호스트 veth, nsfs 마운트, 감시 맵 항목, state 파일이 남고 meta.json 에 exit_code 가 기록되지 않는다. VM 실측(w3d2): 컨테이너 안에서 sleep 600 을 실행하고 timeout 15 로 끊었을 때 종료 코드 124, 위 자원이 모두 남았고 점검기 compare 가 cgroup_dirs, netns, veth, mounts, procs, map_entries, state_files 일곱 행을 FAIL 로 잡았다. 에이전트 프로세스도 살아남았다: sleep 이 컨테이너 PID 1 이라 timeout 이 보낸 TERM 을 무시했다(NSpid 끝 1, 부모 init). 제품의 agent-run 자체에는 시간 초과가 없고 이 timeout 은 러너가 붙인 안전장치이므로, 영향은 시나리오가 멈췄을 때 러너가 에이전트와 격리 자원을 치우지 못하는 것이다. 한 번의 실측이며 PID 1 이 sh 인 여러 명령 스크립트에서의 동작은 확인하지 못했다.
   - 비고: timeout 이 프로세스 그룹 전체에 TERM 을 보내 mycontainer_run 이 정리 전에 죽었고, 컨테이너 PID 1 은 TERM 을 무시해 남았다. run_container.sh 가 TERM/INT 를 받으면 세션 cgroup 에 cgroup.kill 을 쓰고 기존 정리를 이어서 타게 해서 고쳤다. 이 경로에서는 로더가 맵 항목을 지우지 않으므로 정리 단계에서 지우게 했다("w4d1: run_container.sh 정리 단계에서 감시 맵 항목 삭제 (외부 kill 경로)"). 누수 점검(tools/leak_check.sh)은 이 경로를 대표 시나리오에 넣지 않았다. 남은 한계는 아래 "TERM 이 run_container.sh 의 bash 에만 오면 정리가 미뤄짐" 항목에 적었다.
   - 시점: w4
   - 해결: "w4d1: run_container.sh TERM/INT 처리 - 시간 초과·Ctrl-C 경로 정리"
@@ -157,13 +157,15 @@
   - 이유: 로그 기록이 빠져도 리포트만 보는 사람은 누락을 알 수 없다.
   - 시점: w5
   - 해결: (미해결)
-- [ ] **meta.json 필드가 확정되지 않음 (rootfs, limits, cgroup_path 등)**
+- [x] **meta.json 필드가 확정되지 않음 (rootfs, limits, cgroup_path 등)**
   - 이유: 리포트와 재현에 필요한 세션 실행 조건이 아직 기록되지 않는다.
+  - 비고: w5d1: schema_version, rootfs, cgroup_path, limits(memory, cpu, pids) 를 더해 키가 10개가 되었다. 로더 모드(kill/observe)와 켠 탐지기 목록은 meta.json 에 없고 로더 stderr 의 ready 줄에만 있다. command 는 인자를 공백으로 합쳐 인자 경계가 사라지고, 러너 세션은 run.sh 전체(주석 포함)가 들어가 길다. 키 목록과 의미는 docs/log-schema-draft.md 의 "meta.json (세션 정보)" 절에 있다.
   - 시점: w5
-  - 해결: (미해결)
+  - 해결: "w5d1: meta.json 에 형식 버전·rootfs·cgroup 경로·제한값 추가, jq 실패 보호, 권한 0600"
+  - 확인: VM 에서 s00 한 번 실행해 키 10개와 권한 600(root)을 확인했고 정리 단계 뒤에도 600 이 유지됐다 [VM확인, 한 번]. 모래상자에서 시작 jq 실패 시 meta.json 없이 진행됨을 확인했다 [모래상자 확인]
 - [ ] **시작이 거부된 agent-run 도 세션 폴더, by-cgroup 링크, meta.json 이 남고 "세션 시작"이 출력됨** (`run_container.sh`)
   - 이유: 세션 폴더와 by-cgroup 링크, meta.json 은 mycontainer_run 을 부르기 전에 만들어진다. 감시 맵을 못 열거나, 등록하지 못하거나, cgroup 에 합류하지 못하거나, 로더가 없어서 거부되어도 이벤트 없는 세션이 남고 리포트에서 실제 세션과 구분되지 않는다. 남은 by-cgroup 링크는 leak_check 에서 예외로 다룬다.
-  - 비고: 세션 폴더 생성을 확인 뒤로 옮기거나, 거부 사유를 meta.json 에 기록하는 방안. 리포트가 exit_code 와 이벤트 유무로 거르는 것은 임시 대응이 된다. meta.json 에 ended_at 과 exit_code 가 없는 세션도 남는다. (a) run_container.sh 의 bash 가 SIGKILL 로 죽으면 trap 을 쓸 수 없다. (b) set -e 때문에 mycontainer_run 전에 끝나는 경우(예: 네트워크 설정 명령의 실패. run_container.sh:271 의 ip netns add 등)는 EXIT trap 이 없어 cleanup_session 이 돌지 않고, 세션 cgroup, netns, by-cgroup 링크도 남을 수 있다 [추론]. 둘 다 VM 에서 재현하지 못했다 [확인필요]. 리포트에서는 exit_code 가 없는 세션을 "종료 정보 없음" 으로 표시할 계획이다.
+  - 비고: 세션 폴더 생성을 확인 뒤로 옮기거나, 거부 사유를 meta.json 에 기록하는 방안. 리포트가 exit_code 와 이벤트 유무로 거르는 것은 임시 대응이 된다. meta.json 에 ended_at 과 exit_code 가 없는 세션도 남는다. (a) run_container.sh 의 bash 가 SIGKILL 로 죽으면 trap 을 쓸 수 없다. (b) set -e 때문에 mycontainer_run 전에 끝나는 경우(예: 네트워크 설정 명령의 실패. run_container.sh 의 ip netns add 등)는 EXIT trap 이 없어 cleanup_session 이 돌지 않고, 세션 cgroup, netns, by-cgroup 링크도 남을 수 있다 [추론]. 둘 다 VM 에서 재현하지 못했다 [확인필요]. 리포트에서는 exit_code 가 없는 세션을 "종료 정보 없음" 으로 표시할 계획이다.
   - 시점: w5
   - 해결: (미해결)
 
@@ -198,8 +200,8 @@
   - 반영: w2 설계 메모(탐지기는 서로 독립이고 실행 순서에 의존하지 않는다는 작성 규칙)
 - **json_escape가 0x80 이상 바이트를 그대로 출력함** (`json_escape.c`)
   - 이유: 유효하지 않은 UTF-8 바이트열이 섞이면 일부 JSON 파서가 그 줄을 거부할 수 있다.
-  - 비고: w4: exec_identity 규칙 L 의 이유 문자열(reason)이 요청 basename 을 20바이트에서 바이트 단위로 자르므로 UTF-8 문자 중간에서 잘릴 수 있다 [추론, 시나리오 이름은 ASCII 라 확인하지 않음].
-  - 반영: w5 로그 스키마 확정 시 파서 동작 확인, README 한계 섹션
+  - 비고: w4: exec_identity 규칙 L 의 이유 문자열(reason)이 요청 basename 을 20바이트에서 바이트 단위로 자르므로 UTF-8 문자 중간에서 잘릴 수 있다 [추론, 시나리오 이름은 ASCII 라 확인하지 않음]. w5d1: 같은 바이트 절단이 다른 곳에도 있다. exec_identity 의 최종 이름(final_show_len)과 규칙 M 의 요청 이름, write_exec_boundary 의 경로(reason 128바이트 버퍼에서 snprintf 가 자름), 커널이 자른 filename 과 dentry 이름이다 [추론, 시험 안 함]. 잘린 바이트는 json_put_string 이 그대로 내보내므로 그 줄은 유효한 UTF-8 이 아니게 된다 [추론]. jq 1.8.1 은 그 줄을 읽고 깨진 바이트를 U+FFFD 로 바꾸며, Python 의 json.loads 는 바이트 입력에서 UnicodeDecodeError 로 거부한다 [VM확인, 한 번].
+  - 반영: 로그 스키마 문서 verdict 절의 reason 행에 바이트 절단 명시(w5d1), 파서 동작은 jq·Python 으로 한 번 확인(w5d1), README 한계 섹션(남음)
 - **로그 쓰기가 동기식이라 디스크가 막히면 수신 루프도 멈춤** (`session_log.c`)
   - 이유: 쓰기마다 fflush 하는 동기식이라 디스크 지연이 ring buffer 수신을 멈춘다.
     측정(부하 시험 전, 14회 기록): log stats: writes=14, slow(>5ms)=0, max=104us, lost=0.
@@ -241,3 +243,7 @@
 - **mmap 쓰기 뒤 실행과 LRU 축출 뒤 실행의 미탐 여부를 확인하지 못함** (`write_tag.h`)
   - 이유: 확인하지 못했다. mmap 쓰기는 시험하지 않았다. LRU 는 컨테이너 안에서 파일 15000개를 더 써도(write_tags 크기 10039) 처음 쓴 payload 태그가 살아 있어 write_exec_boundary 가 잡았고, 축출을 재현하지 못했다 [VM확인, 한 번]. 커널 LRU 해시가 근사적이라 첫 항목이 남을 수 있다는 가설은 [추론].
   - 반영: 위 쓰기 태깅 미탐 항목에 [확인필요]·[추론] 으로 표기. 다시 시험하는 것은 v0.2 이후.
+- **fsync 를 하지 않아 호스트가 꺼지면 마지막 기록이 사라질 수 있음** (`session_log.c`)
+  - 이유: 기록마다 fflush 로 커널 버퍼까지만 내보내므로, 로더가 죽는 것은 견디지만 호스트 전원이 나가거나 커널이 죽으면 아직 디스크에 쓰이지 않은 기록이 사라진다.
+  - 비고: w5d1: fsync 는 기록마다 디스크를 기다려 느리므로 쓰지 않았다 (session_write_event 의 주석). 이와 별개로, 한 줄을 쓰는 중 fflush 전에 로더가 죽으면 그 줄은 사라지거나 잘린 채 남을 수 있다 [추론, 시험 안 함].
+  - 반영: 로그 스키마 문서 알려진 한계(w5d1), README 한계 섹션(남음)

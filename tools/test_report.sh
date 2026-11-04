@@ -485,8 +485,8 @@ expect_text "n03 이벤트 개수" "EXEC 18, EXEC_PATH 16, TAG_HIT 2"
 expect_text "n03 exit_code 0" "- exit_code: 0"
 # 시나리오 이름을 주지 않았다
 expect_text "n03 시나리오 알 수 없음" "- 시나리오: 알 수 없음"
-# BLOCK 이 없으니 판정 항목 아래 종료 대응 줄도 없다 (세션 정보의 주의 문구에도 "종료 대응" 이 들어 있어 항목 줄 모양으로 찾는다)
-expect_no_text "n03 종료 대응 없음" "  - 종료 대응"
+# BLOCK 이 없으니 종료 대응도 없다 (주의 문구가 "종료 대응" 낱말을 쓰지 않으므로 출력 전체에서 찾는다)
+expect_no_text "n03 종료 대응 없음" "종료 대응"
 
 echo "[실제 출력 fixture: n06 (알려진 오탐 BLOCK + already_gone)]"
 # n06 리포트
@@ -519,8 +519,8 @@ expect_text "s04 종료 대응 sent" "종료 대응: kill/sent (written, errno 0
 expect_text "s04 sent 설명" "세션 종료를 요청했다"
 # exit_code 137
 expect_text "s04 exit_code 137" "- exit_code: 137"
-# exit_code 해석 주의
-expect_text "s04 exit_code 주의 문구" "exit_code 의 값만으로는 종료 원인을 가릴 수 없다"
+# exit_code 해석 주의 (문장 전체. 137 을 가리는 단서가 판정 항목의 kill/sent 라는 뒷부분까지)
+expect_text "s04 exit_code 주의 문구" "- 주의: exit_code 의 값만으로는 종료 원인을 가릴 수 없다. 137 이 로더의 종료 때문인지는 아래 판정 항목의 kill/sent 로만 가린다."
 
 echo "[실제 출력 fixture: s08 (exec_identity [L] + 같은 세션 SUSPECT)]"
 # s08 리포트

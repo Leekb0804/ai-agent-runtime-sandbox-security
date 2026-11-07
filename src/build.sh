@@ -113,4 +113,19 @@ echo "[13/13] 단위 테스트: 더미 탐지기 dummy_block, dummy_suspect (tes
 gcc -Wall -Wextra -I. -Iloader -o test_dummy_detectors \
     loader/test_dummy_detectors.c loader/dispatcher.c loader/detectors/dummy_block.c loader/detectors/dummy_suspect.c
 
-echo "빌드 완료. 테스트: ./test_dispatcher && ./test_verdict_handler && ./test_write_exec_boundary && ./test_loader_lock && ./test_kill && ./test_kill_session && ./test_loader_args && ./test_exec_path && ./test_exec_identity && ./test_dummy_detectors  /  실행: sudo ./myc_loader (더미 탐지기는 --detectors 로 명시해야 켜짐, 관찰 모드는 --no-kill)"
+# 선택 단계: MYC_ASAN=1 일 때만 exec_identity 시험을 ASan+UBSan 으로 한 번 더 빌드한다 (기본에서는 건너뛰고 출력도 그대로다)
+# 기본 빌드가 잡지 못하는 칸 밖 읽기(NUL 없이 꽉 찬 이름 칸을 strlen 으로 재는 것 등)를 실행 중에 잡는다
+# 끝 안내 줄에 덧붙일 문자열 (기본은 빈 문자열이라 안내 줄이 바뀌지 않는다)
+ASAN_HINT=""
+# 환경변수 MYC_ASAN 이 정확히 1 일 때만 실행한다 (없거나 다른 값이면 건너뜀)
+if [[ "${MYC_ASAN:-}" == 1 ]]; then
+    # 단계 이름 (번호 [N/13] 은 쓰지 않는다)
+    echo "[ASan] 단위 테스트: exec_identity (test_exec_identity_asan, MYC_ASAN=1 일 때만)"
+    # -g -fno-omit-frame-pointer : 보고에 소스 줄과 호출 경로가 나오게 한다. 입력 파일은 [12/13] 과 같다
+    gcc -g -fno-omit-frame-pointer -fsanitize=address,undefined -Wall -Wextra -I. -Iloader -o test_exec_identity_asan \
+        loader/test_exec_identity.c loader/dispatcher.c loader/detectors/exec_identity.c
+    # 안내 줄의 테스트 목록 끝에 ASan 시험을 붙인다
+    ASAN_HINT=" && ./test_exec_identity_asan"
+fi
+
+echo "빌드 완료. 테스트: ./test_dispatcher && ./test_verdict_handler && ./test_write_exec_boundary && ./test_loader_lock && ./test_kill && ./test_kill_session && ./test_loader_args && ./test_exec_path && ./test_exec_identity && ./test_dummy_detectors${ASAN_HINT}  /  실행: sudo ./myc_loader (더미 탐지기는 --detectors 로 명시해야 켜짐, 관찰 모드는 --no-kill)"

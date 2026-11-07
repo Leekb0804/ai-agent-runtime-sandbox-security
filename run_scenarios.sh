@@ -108,7 +108,7 @@ LIVE_T1=""                # 지연 측정: agent-run 이 없어진 것을 처음
 # B안 지연 내역을 계산하고 요약하는 도구 (판정에는 쓰지 않는다)
 LATENCY_TOOL="$HERE/tools/live_latency.sh"
 # 러너 전용 로더에 켤 탐지기. 로더는 --detectors 가 없으면 더미(시험용)를 켜지 않는다.
-# s99, s03 은 dummy_block 의 BLOCK 에, s99 의 마지막 기대는 dummy_suspect 의 판정에 의존한다. 이 목록은 여기서만 정한다.
+# s99, s03, s05 은 dummy_block 의 BLOCK 에, s99 의 마지막 기대는 dummy_suspect 의 판정에 의존한다. 이 목록은 여기서만 정한다.
 # 일부러 알파벳순이 아닌 순서로 둔다. ready 줄은 로더가 정렬해서 내므로, 아래 want_dets 의 정렬이 빠지면 테스트(ld1)가 잡는다.
 # exec_identity 는 운영 탐지기라 운영 설정과 같게 켠다 (s06, s07 이 그 판정에 의존한다. 기존 시나리오의 detector 필터 없는 verdict 검사는 BLOCK 만 본다)
 RUNNER_DETECTORS="write_exec_boundary,dummy_block,dummy_suspect,exec_identity"
@@ -216,6 +216,17 @@ preflight() {
         # stat -fc %T 경로 : 그 경로가 놓인 파일시스템의 종류 이름을 출력한다. cgroup v2 이면 cgroup2fs 이다.
         # $( ) 로 그 출력을 받아서 문자열 비교한다.
         [[ "$(stat -fc %T /sys/fs/cgroup 2>/dev/null)" == "cgroup2fs" ]] || errs+=("cgroup v2 가 아니다 (/sys/fs/cgroup)")
+        # BTF: 커널 프로그램(CO-RE)이 커널 구조체를 찾는 데 쓴다. 읽을 수 있어야 한다
+        [[ -r /sys/kernel/btf/vmlinux ]] || errs+=("BTF 가 없다 (/sys/kernel/btf/vmlinux). BTF 가 켜진 커널이 필요하다")
+        # gcc: run_container.sh 는 mycontainer_run 이 없거나 소스보다 오래되면 시작할 때 직접 컴파일한다
+        command -v gcc >/dev/null 2>&1 || errs+=("gcc 가 필요하다 (run_container.sh 가 mycontainer_run 을 컴파일한다)")
+        # 로더 빌드가 최신인가: 로더와 커널 프로그램 소스 중 myc_loader 보다 새 파일이 하나라도 있으면 경고만 내고 계속한다 (오류가 아니다)
+        # 대상은 loader/ 와 bpf/ 아래의 .c/.h (하위 폴더 detectors/ 포함). 생성물(*.skel.h, vmlinux.h)과 단위 시험 소스(test_*.c)는 뺀다
+        # 주의: -newer 는 파일 수정 시각을 비교하므로 VM 시계가 틀리면 결과가 부정확하다
+        if [[ -x "$SRC_DIR/myc_loader" ]] && [[ -n "$(find "$SRC_DIR/loader" "$SRC_DIR/bpf" -type f \( -name '*.c' -o -name '*.h' \) ! -name '*.skel.h' ! -name 'vmlinux.h' ! -name 'test_*.c' -newer "$SRC_DIR/myc_loader" -print -quit 2>/dev/null)" ]]; then
+            # 러너의 다른 알림과 같은 [runner] 접두어로 표준 오류에 낸다
+            echo "[runner] 경고: myc_loader 가 소스보다 오래되었다. cd src && ./build.sh 를 다시 하라" >&2
+        fi
     fi
 
     # 아래 몇 줄은 모두 "[[ 확인 ]] || errs+=(메시지)" 꼴이다. 확인이 실패하면 메시지를 목록에 모아 둔다.

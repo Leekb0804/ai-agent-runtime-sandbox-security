@@ -7,6 +7,7 @@
 # 커널, 컨테이너, root 권한이 필요 없다. fixtures/ 의 로그 파일을 입력으로 쓴다.
 #
 # fixtures/real_* 는 4일차에 실제로 agent-run 과 로더를 돌려서 얻은 세션 폴더(events.jsonl, verdicts.jsonl)이다.
+# fixtures/real_w5_* 는 w5d1 VM 에서 러너가 만든 세션 폴더(events.jsonl, verdicts.jsonl, meta.json)를 그대로 복사한 것이다.
 # fixtures/bad_* 는 그것을 일부러 깨뜨린 것이고, empty 는 빈 로그, events_only 는 판정이 0줄인 로그이다.
 #
 # ===== 왜 필요한가 =====
@@ -29,6 +30,14 @@ FIX="$HERE/fixtures"
 S00="$ROOT/scenarios/s00_benign/expect.json"
 S99="$ROOT/scenarios/s99_dummy_block/expect.json"
 S02="$ROOT/scenarios/s02_write_exec_same_session/expect.json"
+# 아래 넷은 "탐지기 판정이 없으면 시나리오 기대가 FAIL" 묶음에서 쓴다. s04 기대값
+S04="$ROOT/scenarios/s04_write_exec_live/expect.json"
+# s08 기대값
+S08="$ROOT/scenarios/s08_symlink_disguise/expect.json"
+# n03 기대값
+N03="$ROOT/scenarios/n03_pip_install_local/expect.json"
+# n06 기대값
+N06="$ROOT/scenarios/n06_host_runs_output/expect.json"
 
 # 실패한 케이스 수를 센다.
 failures=0
@@ -56,6 +65,80 @@ check() {
         # sed 's/^/        /' 파일들 : 각 줄 앞에 공백 8칸을 붙여 들여쓰기해서, 실패한 케이스의 판정기 출력을 그대로 보여 준다.
         sed 's/^/        /' "$TMP/out.txt" "$TMP/err.txt"
         # $(( )) 는 계산이다. 실패 수를 하나 늘린다.
+        failures=$((failures + 1))
+    fi
+}
+
+# 바로 앞 check 의 판정기 출력($TMP/out.txt)에 문구가 있는지 확인한다 (tools/test_report.sh 의 expect_text 와 같은 형식)
+# 종료 코드만으로는 어느 검사 항목이 FAIL 했는지 알 수 없다. 판정을 지운 탐지기의 항목이 실제로 FAIL 했는지 보려고 쓴다.
+#   expect_out "<설명>" "<문구>"
+expect_out() {
+    # 설명과 문구
+    local msg="$1" text="$2"
+    # 있으면 통과 (-F: 문구를 정규식이 아니라 글자 그대로 찾는다)
+    if grep -qF -- "$text" "$TMP/out.txt"; then
+        # 통과 줄
+        printf '  PASS  %s\n' "$msg"
+    else
+        # 실패 줄과 찾던 문구
+        printf '  FAIL  %s (출력에 "%s" 가 없음)\n' "$msg" "$text"
+        # 판정기 출력을 들여써서 보여 준다
+        sed 's/^/        /' "$TMP/out.txt" "$TMP/err.txt"
+        # 실패 수를 늘린다
+        failures=$((failures + 1))
+    fi
+}
+
+# 세션 폴더에서 탐지기 하나의 판정을 지운 사본을 만든다.
+#   strip_detector <원본 세션 폴더> <탐지기 이름> <결과 폴더>
+# events.jsonl 은 그대로 복사하고(탐지기와 무관한 관측), verdicts.jsonl 에서 다음 줄만 지운다:
+#   - 그 탐지기의 verdict 줄 전부
+#   - 그 탐지기 BLOCK verdict 의 reason 과 reason 이 같은 action 줄
+# action 줄에는 detector 필드가 없어서 reason 으로 짝짓는다. docs/log-schema-draft.md 의 action 절에 따르면
+# action 줄은 세션의 첫 BLOCK verdict 줄 바로 다음 줄에 있고 reason 이 그 verdict 의 reason 과 같다.
+# 복사나 jq 가 실패하면 FAIL 줄을 내고 실패 수를 늘린다. 그러지 않으면 비거나 잘린 verdicts.jsonl 때문에
+# 뒤의 "실패해야 한다" 검사가 거짓으로 통과할 수 있다.
+strip_detector() {
+    # 원본 폴더, 탐지기 이름, 결과 폴더
+    local src="$1" det="$2" out="$3"
+    # 결과 폴더를 만든다 ($TMP 아래)
+    mkdir -p "$out"
+    # 이벤트 로그는 그대로 복사하고, 판정 로그는 jq 로 걸러 쓴다. 둘 중 하나라도 실패하면 실패로 센다
+    if ! cp "$src/events.jsonl" "$out/events.jsonl" \
+        || ! jq -c -s --arg d "$det" '([.[] | select(.type == "verdict" and .detector == $d and .level == "BLOCK") | .reason]) as $r | .[] | select(((.type == "verdict" and .detector == $d) or (.type == "action" and (.reason as $x | $r | any(. == $x)))) | not)' "$src/verdicts.jsonl" >"$out/verdicts.jsonl"; then
+        # 무엇을 지우다 실패했는지
+        printf '  FAIL  판정 지우기 실패: %s 에서 %s\n' "$src" "$det"
+        # 실패 수를 늘린다
+        failures=$((failures + 1))
+    fi
+}
+
+# strip_detector 가 만든 폴더의 verdicts.jsonl 에 action 줄이 남지 않았는지 확인한다 (expect_out 과 같은 형식)
+# strip_detector 는 탐지기의 BLOCK verdict 에 붙은 action 도 지워야 한다. 지우지 않아도 verdict 항목 때문에
+# 지운 검사가 이미 FAIL 하므로, 이 확인이 없으면 action 을 남기는 잘못을 어느 검사도 잡지 못했다.
+#   expect_no_action "<설명>" "<결과 폴더>"
+expect_no_action() {
+    # 설명, 결과 폴더, jq 가 뽑은 action 줄, 그 줄 수
+    local msg="$1" dir="$2" lines n
+    # action 줄만 뽑는다. jq 가 실패하면(파일 없음, 깨진 줄) 실패로 센다
+    if ! lines=$(jq -c 'select(.type == "action")' "$dir/verdicts.jsonl"); then
+        # 실패 줄과 읽으려던 파일
+        printf '  FAIL  %s (jq 실패: %s/verdicts.jsonl)\n' "$msg" "$dir"
+        # 실패 수를 늘린다
+        failures=$((failures + 1))
+        # 줄 수는 세지 않는다
+        return
+    fi
+    # 뽑은 줄 수를 센다 (grep -c '^' 는 빈 출력이면 0, 마지막 줄에 줄바꿈이 없어도 그 줄을 센다)
+    n=$(printf '%s' "$lines" | grep -c '^')
+    # 0 이면 통과
+    if [[ "$n" == 0 ]]; then
+        # 통과 줄
+        printf '  PASS  %s\n' "$msg"
+    else
+        # 실패 줄과 남은 action 줄 수, 폴더
+        printf '  FAIL  %s (action 줄 %s개가 남음: %s)\n' "$msg" "$n" "$dir"
+        # 실패 수를 늘린다
         failures=$((failures + 1))
     fi
 }
@@ -166,6 +249,70 @@ echo '{ "expect": [ { "count": 1 } ] }' >"$TMP/no_match.json"
 check "match 가 없는 검사는 입력 오류" 2 "$FIX/real_s00_benign.jsonl" "$TMP/no_match.json"
 
 check "expect 파일이 없으면 입력 오류" 2 "$FIX/real_s00_benign.jsonl" "$TMP/없는기대.json"
+
+echo "[탐지기 판정이 없으면 시나리오 기대가 FAIL]"
+# 시나리오마다 원본 fixture 의 대조(기대 0)를 먼저 보고, 그 탐지기의 판정을 strip_detector 로 지운 로그의 실패(기대 1)를 본다.
+# expect_out 이 찾는 문구는 judge.sh 의 FAIL 줄 앞부분(FAIL, 탭, 검사 번호, 탭, match)이다.
+# match 만 찾으면 같은 탐지기의 OK 줄(예: s04 의 #6 SUSPECT count 0)에도 걸려 항상 통과하므로 FAIL 과 번호를 붙인다.
+# s04 대조: 원본은 통과
+check "s04 대조: real_w5_s04 는 s04 기대를 통과" 0 "$FIX/real_w5_s04" "$S04"
+# s04 에서 write_exec_boundary 의 판정(BLOCK)과 그 action 을 지운다
+strip_detector "$FIX/real_w5_s04" write_exec_boundary "$TMP/strip_s04_write_exec_boundary"
+# 지운 로그는 실패
+check "s04: write_exec_boundary 판정(BLOCK)과 그 action 을 지우면 실패" 1 "$TMP/strip_s04_write_exec_boundary" "$S04"
+# 실패한 항목에 write_exec_boundary 의 BLOCK 검사(#2)가 있다
+expect_out "s04: write_exec_boundary 의 BLOCK 검사(#2)가 FAIL" $'FAIL\t#2\t{"type":"verdict","level":"BLOCK","detector":"write_exec_boundary"}'
+# 지운 폴더에 BLOCK 에 붙은 action 이 남지 않았다
+expect_no_action "s04: write_exec_boundary 를 지운 폴더에 action 줄이 없음" "$TMP/strip_s04_write_exec_boundary"
+# s08 대조: 원본은 통과
+check "s08 대조: real_w5_s08 는 s08 기대를 통과" 0 "$FIX/real_w5_s08" "$S08"
+# s08 에서 exec_identity 의 판정만 지운다
+strip_detector "$FIX/real_w5_s08" exec_identity "$TMP/strip_s08_exec_identity"
+# 지운 로그는 실패
+check "s08: exec_identity 판정만 지우면 실패" 1 "$TMP/strip_s08_exec_identity" "$S08"
+# 실패한 항목에 exec_identity 의 검사(#2)가 있다
+expect_out "s08: exec_identity 의 SUSPECT 검사(#2)가 FAIL" $'FAIL\t#2\t{"type":"verdict","level":"SUSPECT","detector":"exec_identity"}'
+# s08 에서 write_exec_boundary 의 판정만 지운다
+strip_detector "$FIX/real_w5_s08" write_exec_boundary "$TMP/strip_s08_write_exec_boundary"
+# 지운 로그는 실패
+check "s08: write_exec_boundary 판정만 지우면 실패" 1 "$TMP/strip_s08_write_exec_boundary" "$S08"
+# 실패한 항목에 write_exec_boundary 의 검사(#3)가 있다 (exec_identity 를 지운 경우와 다른 줄)
+expect_out "s08: write_exec_boundary 의 SUSPECT 검사(#3)가 FAIL" $'FAIL\t#3\t{"type":"verdict","level":"SUSPECT","detector":"write_exec_boundary"}'
+# n03 대조: 원본은 통과
+check "n03 대조: real_w5_n03 는 n03 기대를 통과" 0 "$FIX/real_w5_n03" "$N03"
+# n03 에서 write_exec_boundary 의 판정(SUSPECT 둘)을 지운다
+strip_detector "$FIX/real_w5_n03" write_exec_boundary "$TMP/strip_n03_write_exec_boundary"
+# 지운 로그는 실패
+check "n03: write_exec_boundary 판정을 지우면 실패" 1 "$TMP/strip_n03_write_exec_boundary" "$N03"
+# 실패한 항목에 write_exec_boundary 의 검사(#5)가 있다
+expect_out "n03: write_exec_boundary 의 SUSPECT 검사(#5)가 FAIL" $'FAIL\t#5\t{"type":"verdict","level":"SUSPECT","detector":"write_exec_boundary"}'
+# n06 대조: 원본은 통과
+check "n06 대조: real_w5_n06 는 n06 기대를 통과" 0 "$FIX/real_w5_n06" "$N06"
+# n06 에서 write_exec_boundary 의 판정(BLOCK)과 그 action 을 지운다
+strip_detector "$FIX/real_w5_n06" write_exec_boundary "$TMP/strip_n06_write_exec_boundary"
+# 지운 로그는 실패
+check "n06: write_exec_boundary 판정(BLOCK)과 그 action 을 지우면 실패" 1 "$TMP/strip_n06_write_exec_boundary" "$N06"
+# 실패한 항목에 write_exec_boundary 의 BLOCK 검사(#3)가 있다
+expect_out "n06: write_exec_boundary 의 BLOCK 검사(#3)가 FAIL" $'FAIL\t#3\t{"type":"verdict","level":"BLOCK","detector":"write_exec_boundary"}'
+# 지운 폴더에 BLOCK 에 붙은 action 이 남지 않았다
+expect_no_action "n06: write_exec_boundary 를 지운 폴더에 action 줄이 없음" "$TMP/strip_n06_write_exec_boundary"
+# real_s99_dummy_block 의 action 줄은 손으로 고친 줄이다 (위 "통과해야 하는 경우" 묶음 앞의 주의 주석)
+# s99 대조: 원본은 통과
+check "s99 대조: real_s99_dummy_block 은 s99 기대를 통과" 0 "$FIX/real_s99_dummy_block" "$S99"
+# s99 에서 dummy_block 의 판정(BLOCK)과 그 action 을 지운다
+strip_detector "$FIX/real_s99_dummy_block" dummy_block "$TMP/strip_s99_dummy_block"
+# 지운 로그는 실패
+check "s99: dummy_block 판정(BLOCK)과 그 action 을 지우면 실패" 1 "$TMP/strip_s99_dummy_block" "$S99"
+# 실패한 항목에 dummy_block 의 BLOCK 검사(#2)가 있다
+expect_out "s99: dummy_block 의 BLOCK 검사(#2)가 FAIL" $'FAIL\t#2\t{"type":"verdict","level":"BLOCK","detector":"dummy_block","filename":"/tmp/trigger"}'
+# 지운 폴더에 BLOCK 에 붙은 action 이 남지 않았다
+expect_no_action "s99: dummy_block 을 지운 폴더에 action 줄이 없음" "$TMP/strip_s99_dummy_block"
+# s99 에서 dummy_suspect 의 판정만 지운다 (action 은 dummy_block 의 것이라 남는다)
+strip_detector "$FIX/real_s99_dummy_block" dummy_suspect "$TMP/strip_s99_dummy_suspect"
+# 지운 로그는 실패
+check "s99: dummy_suspect 판정을 지우면 실패" 1 "$TMP/strip_s99_dummy_suspect" "$S99"
+# 실패한 항목에 dummy_suspect 의 검사(#5)가 있다
+expect_out "s99: dummy_suspect 의 SUSPECT 검사(#5)가 FAIL" $'FAIL\t#5\t{"type":"verdict","level":"SUSPECT","detector":"dummy_suspect","filename":"/tmp/trigger"}'
 
 echo
 # 마지막: 실패한 케이스가 없으면 종료 코드 0, 있으면 1.

@@ -1,0 +1,22 @@
+#!/bin/bash
+# tools/mock/sandbox/stat  -  가짜 stat (tools/test_run_container.sh 의 모래상자용)
+# run_container.sh 의 CGROUP_ID=$(stat -c %i "$CGROUP_PATH") 는 sudo 없이 부르므로 가짜 sudo 의 경로 바꾸기를 거치지 않는다.
+# 그래서 여기서 /sys/fs/cgroup 만 $SB_ROOT/cg 로 바꾸고 진짜 stat 을 부른다.
+# 진짜 stat 의 경로는 시험이 command -v 로 찾아 MOCK_REAL_STAT 으로 넘긴다 (이 파일에 경로를 적지 않는다).
+
+# 모래상자 폴더와 진짜 stat 이 정해졌는지 확인한다
+if [[ -z "${SB_ROOT:-}" || ! -x "${MOCK_REAL_STAT:-}" ]]; then
+    # 왜 멈췄는지 알린다
+    echo "가짜 stat: SB_ROOT 또는 MOCK_REAL_STAT 이 없음: $*" >&2
+    # 준비 오류로 끝낸다
+    exit 2
+fi
+# 바꾼 인자를 담을 배열
+args=()
+# 인자를 하나씩 본다
+for a in "$@"; do
+    # cgroup 경로만 모래상자의 cg 로 바꿔 담는다
+    args+=("${a//\/sys\/fs\/cgroup/$SB_ROOT/cg}")
+done
+# 진짜 stat 을 부른다
+exec "$MOCK_REAL_STAT" "${args[@]}"

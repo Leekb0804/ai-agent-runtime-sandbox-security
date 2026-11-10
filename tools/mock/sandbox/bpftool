@@ -1,0 +1,14 @@
+#!/bin/bash
+# tools/mock/sandbox/bpftool  -  가짜 bpftool (tools/test_run_container.sh 의 모래상자용)
+# run_container.sh 의 정리 단계(unwatch_session_cgroup)가 부르는 두 형태를 흉내 낸다.
+#   map delete ... : 성공(0)
+#   map lookup ... : Not found(254). 정리 단계가 "항목 없음(정상)" 으로 보고 아무것도 출력하지 않는다
+# tools/mock/bpftool(러너용, bpftool -j map dump 만 받음)과는 다른 가짜다.
+
+# 둘째 인자가 lookup 이면 (bpftool map lookup ...)
+if [[ "${2:-}" == "lookup" ]]; then
+    # 항목이 없다고 답한다
+    exit 254
+fi
+# 그 밖(map delete 등)은 성공
+exit 0

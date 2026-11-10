@@ -37,6 +37,7 @@ TESTS=(
     tools/test_report.sh
     tools/test_leak_check.sh
     tools/test_live_latency.sh
+    tools/test_run_container.sh
     tools/test_runner.sh
 )
 

@@ -1,0 +1,39 @@
+#!/bin/bash
+# tools/mock/sandbox/mycontainer_run  -  가짜 mycontainer_run (tools/test_run_container.sh 의 모래상자용)
+# 인자: <lowerdir> <컨테이너 폴더> <cgroup 경로> <netns> <명령...>
+# 명령의 첫 인자가 rc=N 이면 종료 코드 N 으로 끝난다 (없으면 0). 컨테이너는 만들지 않는다.
+# 끝나기 전에 "시작 직후" meta.json 의 권한과 키를 $SNAP_FILE 에 적는다 (세션 루트에서 가장 최근 세션 폴더).
+#   start_perm=<8진수 권한>  start_keys=<정렬한 키 JSON 배열>   (meta.json 이 있을 때)
+#   start_meta=없음 (<경로>)                                    (meta.json 이 없을 때)
+# 진짜 stat, jq 의 경로는 시험이 넘긴 MOCK_REAL_STAT, MOCK_REAL_JQ 를 쓴다.
+
+# 기록할 파일과 진짜 명령이 정해졌는지 확인한다
+if [[ -z "${SNAP_FILE:-}" || -z "${MYC_SESSIONS_ROOT:-}" || ! -x "${MOCK_REAL_STAT:-}" || ! -x "${MOCK_REAL_JQ:-}" ]]; then
+    # 왜 멈췄는지 알린다
+    echo "가짜 mycontainer_run: SNAP_FILE, MYC_SESSIONS_ROOT, MOCK_REAL_STAT, MOCK_REAL_JQ 중 없는 것이 있음" >&2
+    # 준비 오류로 끝낸다
+    exit 2
+fi
+# 기본 종료 코드
+rc=0
+# 다섯째 인자(명령의 첫 인자)가 rc=숫자 이면 그 숫자를 종료 코드로 쓴다
+if [[ "${5:-}" =~ ^rc=([0-9]+)$ ]]; then rc="${BASH_REMATCH[1]}"; fi
+# 가장 최근 세션 폴더 (이름이 날짜로 시작하는 폴더, -t 로 수정 시각 순)
+sdir="$(ls -1td "$MYC_SESSIONS_ROOT"/2*/ 2>/dev/null | head -1)"
+# 그 폴더의 meta.json 경로 (끝의 / 를 떼고 붙인다)
+m="${sdir%/}/meta.json"
+# 시작 직후의 모습을 기록 파일에 쓴다
+{
+    # meta.json 이 있으면 권한과 키
+    if [[ -f "$m" ]]; then
+        # 8진수 권한
+        echo "start_perm=$("$MOCK_REAL_STAT" -c '%a' "$m")"
+        # 정렬한 키 배열 (jq 의 keys 는 정렬해서 준다. 실패하면 오류 문구가 그대로 남는다)
+        echo "start_keys=$("$MOCK_REAL_JQ" -c 'keys' "$m" 2>&1)"
+    else
+        # 없다는 것과 찾은 경로
+        echo "start_meta=없음 ($m)"
+    fi
+} >"$SNAP_FILE"
+# 정한 종료 코드로 끝낸다
+exit "$rc"

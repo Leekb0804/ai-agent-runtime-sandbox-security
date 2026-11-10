@@ -1,0 +1,6 @@
+#!/bin/bash
+# tools/mock/sandbox/sysctl  -  가짜 sysctl (tools/test_run_container.sh 의 모래상자용)
+# 무엇이든 성공한다. 가짜 ip 가 br0 이 있다고 답하므로 run_container.sh 는 이 명령을 부르지 않는다 (안전망으로만 둔다).
+
+# 성공으로 끝낸다
+exit 0

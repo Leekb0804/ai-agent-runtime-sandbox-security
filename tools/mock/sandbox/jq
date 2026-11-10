@@ -1,0 +1,22 @@
+#!/bin/bash
+# tools/mock/sandbox/jq  -  가짜 jq (tools/test_run_container.sh 의 모래상자용)
+# MOCK_JQ_FAIL_START=1 이고 첫 인자가 -n 이면(run_container.sh 의 시작 쓰기) 종료 코드 1 로 실패한다.
+# 그 밖에는 진짜 jq 를 그대로 부른다 (정리 단계의 sudo jq 도 가짜 sudo 를 거쳐 여기로 온다).
+# 진짜 jq 의 경로는 시험이 command -v 로 찾아 MOCK_REAL_JQ 로 넘긴다 (이 파일에 경로를 적지 않는다).
+
+# 진짜 jq 가 정해졌는지 확인한다
+if [[ ! -x "${MOCK_REAL_JQ:-}" ]]; then
+    # 왜 멈췄는지 알린다
+    echo "가짜 jq: MOCK_REAL_JQ 가 없음: $*" >&2
+    # 준비 오류로 끝낸다
+    exit 2
+fi
+# 시작 쓰기만 실패시킨다
+if [[ "${MOCK_JQ_FAIL_START:-}" == 1 && "${1:-}" == "-n" ]]; then
+    # 가짜가 일부러 실패했다는 것을 알린다
+    echo "가짜 jq: 시작 쓰기 실패" >&2
+    # jq 오류처럼 1 로 끝낸다
+    exit 1
+fi
+# 진짜 jq 를 부른다
+exec "$MOCK_REAL_JQ" "$@"

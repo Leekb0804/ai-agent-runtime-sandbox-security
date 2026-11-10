@@ -1,0 +1,27 @@
+#!/bin/bash
+# tools/mock/sandbox/sudo  -  가짜 sudo (tools/test_run_container.sh 의 모래상자용)
+# root 권한 없이 받은 명령을 그대로 실행한다. 인자 안의 고정 경로는 모래상자 폴더로 바꾼다.
+#   /sys/fs/cgroup                   -> $SB_ROOT/cg
+#   /var/lib/mycontainer/containers  -> $SB_ROOT/containers
+# SB_ROOT 가 없으면 바꿀 곳을 모르므로 실행하지 않고 실패한다 (진짜 경로를 건드리지 않게).
+
+# 모래상자 폴더가 정해졌는지 확인한다
+if [[ -z "${SB_ROOT:-}" ]]; then
+    # 왜 멈췄는지 알린다
+    echo "가짜 sudo: SB_ROOT 가 없음 (실행하지 않음): $*" >&2
+    # 준비 오류로 끝낸다
+    exit 2
+fi
+# 바꾼 인자를 담을 배열
+args=()
+# 인자를 하나씩 본다
+for a in "$@"; do
+    # cgroup 경로를 모래상자의 cg 로 바꾼다
+    a="${a//\/sys\/fs\/cgroup/$SB_ROOT/cg}"
+    # 컨테이너 폴더 경로를 모래상자의 containers 로 바꾼다
+    a="${a//\/var\/lib\/mycontainer\/containers/$SB_ROOT/containers}"
+    # 바꾼 인자를 담는다
+    args+=("$a")
+done
+# 바꾼 인자로 명령을 실행한다 (PATH 의 가짜 명령이 먼저 찾아진다)
+exec "${args[@]}"

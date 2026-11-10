@@ -1,0 +1,6 @@
+#!/bin/bash
+# tools/mock/sandbox/ip  -  가짜 ip (tools/test_run_container.sh 의 모래상자용)
+# 무엇이든 성공한다. ip link show br0 도 성공이라 run_container.sh 의 br0 생성 블록(iptables, sysctl)은 건너뛴다.
+
+# 성공으로 끝낸다
+exit 0

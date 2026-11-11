@@ -201,7 +201,7 @@
 - **json_escape가 0x80 이상 바이트를 그대로 출력함** (`json_escape.c`)
   - 이유: 유효하지 않은 UTF-8 바이트열이 섞이면 일부 JSON 파서가 그 줄을 거부할 수 있다.
   - 비고: w4: exec_identity 규칙 L 의 이유 문자열(reason)이 요청 basename 을 20바이트에서 바이트 단위로 자르므로 UTF-8 문자 중간에서 잘릴 수 있다 [추론, 시나리오 이름은 ASCII 라 확인하지 않음]. w5d1: 같은 바이트 절단이 다른 곳에도 있다. exec_identity 의 최종 이름(final_show_len)과 규칙 M 의 요청 이름, write_exec_boundary 의 경로(reason 128바이트 버퍼에서 snprintf 가 자름), 커널이 자른 filename 과 dentry 이름이다 [추론, 시험 안 함]. 잘린 바이트는 json_put_string 이 그대로 내보내므로 그 줄은 유효한 UTF-8 이 아니게 된다 [추론]. jq 1.8.1 은 그 줄을 읽고 깨진 바이트를 U+FFFD 로 바꾸며, Python 의 json.loads 는 바이트 입력에서 UnicodeDecodeError 로 거부한다 [VM확인, 한 번].
-  - 반영: 로그 스키마 문서 verdict 절의 reason 행에 바이트 절단 명시(w5d1), 파서 동작은 jq·Python 으로 한 번 확인(w5d1), README 한계 섹션(남음)
+  - 반영: 로그 스키마 문서 verdict 절의 reason 행에 바이트 절단 명시(w5d1), 파서 동작은 jq·Python 으로 한 번 확인(w5d1), README 한계 섹션(w5d3)
 - **로그 쓰기가 동기식이라 디스크가 막히면 수신 루프도 멈춤** (`session_log.c`)
   - 이유: 쓰기마다 fflush 하는 동기식이라 디스크 지연이 ring buffer 수신을 멈춘다.
     측정(부하 시험 전, 14회 기록): log stats: writes=14, slow(>5ms)=0, max=104us, lost=0.
@@ -216,7 +216,7 @@
   - 반영: 세션 폴더 정리 시 같이 삭제
 - **에이전트는 사용자 네임스페이스 안 root(uid 0, 전체 capability)로 실행됨. 하드닝은 미적용**
   - 이유: VM 확인 결과 id=0, CapEff=000001ffffffffff, 호스트 기준 uid 1000 (w2d1). 비root, capability 축소, no_new_privs는 일반 권장 사항이지만 v0.1에서는 실험에서 바뀌는 조건을 늘리지 않으려고 적용하지 않았다. 컨테이너 안 /tmp 는 root 소유 drwxrwxr-x 라서 비root 전환에는 rootfs 권한 정리와 uid_map 확장이 필요하다.
-  - 반영: 위협 모델 신뢰 가정에 명시. 탐지기가 선 뒤 별도 작업으로 cap 축소와 no_new_privs, 이어서 비root 전환을 시도하고 s00/s99 이벤트가 같은지 비교 (w3 이후, 선택)
+  - 반영: 위협 모델 신뢰 가정에 명시, README 한계 섹션(w5d3). 탐지기가 선 뒤 별도 작업으로 cap 축소와 no_new_privs, 이어서 비root 전환을 시도하고 s00/s99 이벤트가 같은지 비교 (w3 이후, 선택)
 - **세션 kill은 세션 밖에서 일어난 실행을 멈추지 못함**
   - 이유: kill_session 은 세션 cgroup 안의 프로세스만 끊는다. 쓰기→실행 탐지기의 BLOCK 도 판정이 exec 이후에 나오므로 의미는 후속 행동 중단이다.
   - 반영: 위협 모델 "차단의 두 가지 의미"와 README 한계 섹션(w5)에 "차단 = 사후 종료" 명시. 커널 안 거부는 v0.3 실험 후보
@@ -246,4 +246,4 @@
 - **fsync 를 하지 않아 호스트가 꺼지면 마지막 기록이 사라질 수 있음** (`session_log.c`)
   - 이유: 기록마다 fflush 로 커널 버퍼까지만 내보내므로, 로더가 죽는 것은 견디지만 호스트 전원이 나가거나 커널이 죽으면 아직 디스크에 쓰이지 않은 기록이 사라진다.
   - 비고: w5d1: fsync 는 기록마다 디스크를 기다려 느리므로 쓰지 않았다 (session_write_event 의 주석). 이와 별개로, 한 줄을 쓰는 중 fflush 전에 로더가 죽으면 그 줄은 사라지거나 잘린 채 남을 수 있다 [추론, 시험 안 함].
-  - 반영: 로그 스키마 문서 알려진 한계(w5d1), README 한계 섹션(남음)
+  - 반영: 로그 스키마 문서 알려진 한계(w5d1), README 한계 섹션(w5d3)

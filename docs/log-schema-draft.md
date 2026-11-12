@@ -20,7 +20,7 @@
 
 ## meta.json (세션 정보)
 
-agent-run(`src/run_container.sh agent-run`)이 세션을 시작할 때 만들고, 정리 단계에서 `ended_at` 과 `exit_code` 를 더한다. JSON Lines 가 아니라 객체 하나다. `run` 모드에서는 만들지 않는다.
+agent-run(`src/run_container.sh agent-run`)이 세션을 시작할 때 만들고, 정리 단계에서 `ended_at`, `exit_code`, `started` 를 더한다. JSON Lines 가 아니라 객체 하나다. `run` 모드에서는 만들지 않는다.
 
 | 키 | 타입 | 쓰는 때 | 설명 |
 | --- | --- | --- | --- |
@@ -34,10 +34,13 @@ agent-run(`src/run_container.sh agent-run`)이 세션을 시작할 때 만들고
 | `limits` | 객체 | 시작 | `memory`, `cpu`, `pids` 세 문자열. 기본값은 모두 `"max"`. `cpu` 는 사용자가 준 값이다 (`cpu.max` 에 쓴 변환값이 아님) |
 | `ended_at` | 문자열 | 종료 | 정리 단계 끝의 `date -Is` |
 | `exit_code` | 정수 | 종료 | agent-run 의 종료 코드. 의미는 아래 "exit_code 의 의미" 절 |
+| `started` | 불리언 | 종료 | 컨테이너가 시작됐는지. `mycontainer_run` 이 clone 성공 뒤 세션 폴더에 만드는 시작 표시 파일 `started` 가 있으면 `true`, 없으면 `false` (w5d3 부터). `false` 는 `mycontainer_run` 이 clone 에 이르기 전에 끝난 경우(로더 없음, 인자 부족, cgroup 합류·netns·cgroup stat 실패, 감시 맵 열기·등록 실패, overlay 디렉토리·pipe 준비 실패 등 clone 앞의 `die()`), 시작 전 TERM/INT, 표시 파일 생성 실패다. 이 경우들끼리는 구분하지 못한다. `true` 는 clone 성공(그 전에 로더 생존 확인과 감시 맵 등록을 지났다)을 뜻하고, clone 뒤 자식의 초기화 실패(`die()`)나 명령 실행 여부는 말하지 않는다. 그런 경우도 `started` 는 `true` 이고 종료 코드는 1 일 수 있다. |
 
 - 권한은 0600, 소유자는 root 다 (jsonl 과 같다). 정리 단계는 임시 파일을 만들어 600 으로 맞춘 뒤 `mv` 로 바꿔 넣으므로 갱신 뒤에도 600 이 유지된다 [VM확인, 한 번].
 - 시작 때 jq 가 실패하면 경고만 내고 meta.json 없이 세션이 진행된다 [모래상자 확인].
-- 정리 단계의 jq 가 실패하면 `ended_at` 과 `exit_code` 가 없는 채로 남는다 [추론].
+- 정리 단계의 jq 가 실패하면 `ended_at`, `exit_code`, `started` 가 없는 채로 남는다 [추론].
+- `started` 키를 더해도 `schema_version` 은 1 그대로다 (키를 더하기만 했다). w5d3 이전 세션과 정리 단계를 타지 못한 세션에는 `started` 가 없고, 리포트는 "컨테이너 시작: (기록 없음)" 으로 표시한다.
+- 시작 표시 파일 `started` 는 세션 폴더에 그대로 남는다 (내용은 `PID=<컨테이너 PID>` 로 참고용이다).
 
 ## exit_code 의 의미
 
@@ -46,7 +49,7 @@ meta.json 의 `exit_code` 는 agent-run 의 종료 코드다. 정상 경로에�
 | 값 | 나오는 경로 | 구분하지 못하는 것 |
 | --- | --- | --- |
 | 0 | 컨테이너 PID 1 이 0 으로 끝남 | |
-| 1 | PID 1 이 신호로 죽음 (`mycontainer_run` 이 1 을 돌려줌. PID 1 만 죽을 때이고, `cgroup.kill` 로 죽으면 `mycontainer_run` 도 죽어 137), `mycontainer_run` 의 `die()`, 로더가 없음, 인자 부족, 에이전트 스크립트가 1 로 끝남 | 이 다섯 경우를 서로 구분하지 못한다 |
+| 1 | PID 1 이 신호로 죽음 (`mycontainer_run` 이 1 을 돌려줌. PID 1 만 죽을 때이고, `cgroup.kill` 로 죽으면 `mycontainer_run` 도 죽어 137), `mycontainer_run` 의 `die()`, 로더가 없음, 인자 부족, 에이전트 스크립트가 1 로 끝남 | 이 다섯 경우를 서로 구분하지 못한다. 다만 clone 에 이르기 전에 끝난 경우(clone 앞의 `die()`, 로더가 없음, 인자 부족)는 `started` 가 `false` 라서 시작한 뒤의 1 과 구분된다 (표시 파일 생성에 실패한 세션은 예외) |
 | 그 밖의 값 (2~125, 126, 127 등) | PID 1 의 종료 코드가 그대로 전달됨 (예: 명령을 못 찾으면 sh 가 127) | 에이전트 자신의 종료 코드와 섞인다 |
 | 124 | 러너가 `timeout` 으로 감싼 agent-run 의 종료 코드다 (그때 meta.json 은 143). `timeout` 자신의 124 는 meta.json 에 나오지 않는다 | 에이전트가 직접 124 로 끝나면 meta.json 에도 124 가 나온다 (위 "그 밖의 값" 행) |
 | 130 | INT trap. 러너 B안(& 로 띄움)에서는 INT trap 이 효과가 없다 | 에이전트가 130 으로 끝난 경우 [추론] |
@@ -181,6 +184,8 @@ action 줄은 세션의 첫 BLOCK verdict 줄 바로 다음 줄에 있고, `reas
 (d) meta.json (s04, (a) 와 같은 세션). `exit_code` 137 은 (a) 의 종료와 맞지만, 137 만으로는 로더의 종료인지 가릴 수 없다 ("exit_code 의 의미" 절).
 
 `command` 는 run.sh 전체가 들어가 길다.
+
+이 샘플은 w5d1 시점의 출력이라 `started` 키(w5d3 부터 정리 단계가 더한다)가 없다.
 
 ```json
 {

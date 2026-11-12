@@ -6,6 +6,8 @@
 #   start_perm=<8진수 권한>  start_keys=<정렬한 키 JSON 배열>   (meta.json 이 있을 때)
 #   start_meta=없음 (<경로>)                                    (meta.json 이 없을 때)
 # 진짜 stat, jq 의 경로는 시험이 넘긴 MOCK_REAL_STAT, MOCK_REAL_JQ 를 쓴다.
+# 진짜처럼 MYC_START_MARK 경로에 시작 표시 파일을 만들고, 받은 경로를 start_mark_env=<경로> 로 적는다.
+# MOCK_MC_REJECT=1 이면 시작 거부를 흉내 내어 표시 파일을 만들지 않는다 (종료 코드는 rc=N 그대로).
 
 # 기록할 파일과 진짜 명령이 정해졌는지 확인한다
 if [[ -z "${SNAP_FILE:-}" || -z "${MYC_SESSIONS_ROOT:-}" || ! -x "${MOCK_REAL_STAT:-}" || ! -x "${MOCK_REAL_JQ:-}" ]]; then
@@ -34,6 +36,13 @@ m="${sdir%/}/meta.json"
         # 없다는 것과 찾은 경로
         echo "start_meta=없음 ($m)"
     fi
+    # run_container.sh 가 넘긴 시작 표시 파일 경로 (없으면 빈 값)
+    echo "start_mark_env=${MYC_START_MARK:-}"
 } >"$SNAP_FILE"
+# 거부를 흉내 내지 않고 경로를 받았으면 진짜처럼 시작 표시 파일을 만든다
+if [[ "${MOCK_MC_REJECT:-}" != "1" && -n "${MYC_START_MARK:-}" ]]; then
+    # 내용은 진짜와 같은 모양 (있는지만 본다)
+    echo "PID=$$" >"$MYC_START_MARK"
+fi
 # 정한 종료 코드로 끝낸다
 exit "$rc"

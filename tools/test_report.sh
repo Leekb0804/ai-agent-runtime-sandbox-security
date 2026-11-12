@@ -144,7 +144,7 @@ make_session() {
     local d="$TMP/$1"
     # 폴더를 만든다
     mkdir -p "$d"
-    # 시험에 필요한 키만 있는 meta.json (키 10개 중 limits, cgroup_path, command 는 일부러 뺐다)
+    # 시험에 필요한 키만 있는 meta.json (정리 뒤 키 11개 중 limits, cgroup_path, command, started 는 일부러 뺐다)
     cat >"$d/meta.json" <<EOF
 {
   "session_id": "$SID",
@@ -259,6 +259,18 @@ make_session gone
 printf '%s\n' "$EV_TAG" >"$TMP/gone/events.jsonl"
 # BLOCK 과 already_gone
 printf '%s\n%s\n' "$V_BLOCK" "$A_GONE" >"$TMP/gone/verdicts.jsonl"
+# 시작이 거부된 세션 (meta.json 의 started 가 false, 이벤트와 판정 파일이 없음)
+make_session rejected
+# 정리 단계가 더하는 started 키를 넣는다 (jq 로 고쳐 임시 파일에 쓴 뒤 바꿔 넣는다)
+jq '. + {started:false}' "$TMP/rejected/meta.json" >"$TMP/rejected/meta.new" && mv "$TMP/rejected/meta.new" "$TMP/rejected/meta.json"
+# 시작한 세션 (started 가 true, 이벤트 한 줄)
+make_session startok
+# started true 를 넣는다
+jq '. + {started:true}' "$TMP/startok/meta.json" >"$TMP/startok/meta.new" && mv "$TMP/startok/meta.new" "$TMP/startok/meta.json"
+# 이벤트 한 줄
+printf '%s\n' "$EV_EXEC" >"$TMP/startok/events.jsonl"
+# 0바이트 판정 파일
+: >"$TMP/startok/verdicts.jsonl"
 # lost 와 드롭이 모두 0 인 로더 로그 (0 이 알 수 없음으로 오인되지 않는지)
 cat >"$TMP/loader0.err" <<'EOF'
 [loader] log stats: writes=5 slow(>5ms)=0 max=3us lost=0
@@ -335,6 +347,8 @@ expect_no_text "(a) 이벤트 없음 문구가 없음" "관측된 이벤트가 �
 expect_no_text "(a) 판정 파일 없음 문구가 없음" "verdicts.jsonl 이 없음"
 # limits, command 가 없는 meta.json 도 오류가 아니다
 expect_text "(a) 없는 키는 (없음) 으로 보임" "- command: (없음)"
+# started 키가 없는 meta.json (w5d3 이전 세션) 은 기록 없음
+expect_text "(a) started 키가 없으면 컨테이너 시작 기록 없음" "- 컨테이너 시작: (기록 없음)"
 # (b) 두 파일 모두 0바이트
 check "(b) 두 파일 0바이트도 리포트를 만든다" 0 "$TMP/zero_b"
 # 관측이 없다
@@ -543,6 +557,18 @@ expect_text_after "s08 실제 이름이 exec_identity 항목 안에 있음" "탐
 expect_no_text_in_item "s08 exec_identity 항목에 같음 표시 없음" "탐지기: exec_identity" "(같음"
 # exec_identity 항목 안에는 다름 표시가 없다
 expect_no_text_in_item "s08 exec_identity 항목에 다름 표시 없음" "탐지기: exec_identity" "(다름"
+
+echo "[meta.json 의 started (시작 거부 표시)]"
+# started false 세션도 리포트를 만든다 (입력 오류가 아니다)
+check "started false 세션도 리포트를 만든다" 0 "$TMP/rejected"
+# 시작 거부 문구 (문장 전체)
+expect_text "started false 면 시작 안 됨 문구" "- 컨테이너 시작: 안 됨 (시작 거부이거나 컨테이너를 만들기 전에 끝남. 이 세션의 판정과 이벤트가 없는 것은 감시 결과가 아니다)"
+# started true 세션
+check "started true 세션도 리포트를 만든다" 0 "$TMP/startok"
+# 시작 됨 문구
+expect_text "started true 면 시작 됨" "- 컨테이너 시작: 됨"
+# 거부 문구는 없다
+expect_no_text "started true 면 시작 안 됨 문구가 없음" "컨테이너 시작: 안 됨"
 
 echo "[실제 출력 fixture: s00 (실제 판정 0건, 다른 로더 실행)]"
 # s00 리포트

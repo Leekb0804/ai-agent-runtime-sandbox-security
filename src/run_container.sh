@@ -18,6 +18,8 @@ CMD=()
 MODE="run"
 SESSION_ID=""
 SESSION_DIR=""
+# 시작 표시 파일 경로 (agent 모드에서 세션 폴더의 started). mycontainer_run 이 clone 성공 뒤 만든다. 없으면 정리 단계가 started:false 를 쓴다
+START_MARK=""
 CGROUP_ID=""
 # 정리 단계가 부분 생성 상태를 구분하는 데 쓴다. NETNS_NAME 은 netns 를 만들기 직전에 정해진다
 NETNS_NAME=""
@@ -82,7 +84,7 @@ unwatch_session_cgroup() {
 }
 
 # 세션 정리 단계. mycontainer_run 이 돌아온 뒤 정상 경로가 부르고, TERM/INT 처리기(on_signal)도 부른다. 마지막에 RC 로 끝낸다.
-# 순서: 감시 맵 항목 삭제 -> cgroup rmdir 재시도 -> netns 삭제 -> (agent 모드) meta.json 갱신 -> exit "$RC"
+# 순서: 감시 맵 항목 삭제 -> cgroup rmdir 재시도 -> netns 삭제 -> (agent 모드) 시작 표시 확인 -> meta.json 갱신 -> exit "$RC"
 # 맵 삭제는 반드시 rmdir 전에 한다. rmdir 뒤에는 cgroup id 가 다른 세션에 재사용될 수 있어 그 id 로 지우면 남의 감시가 풀린다.
 # 설정 단계 도중(부분 생성 상태)에 불릴 수 있으므로 있는 자원만 정리한다. set -e 가 살아 있으니 실패할 수 있는 명령은 if 나 || 안에서 부른다.
 cleanup_session() {
@@ -133,14 +135,26 @@ cleanup_session() {
         sudo ip netns delete "$NETNS_NAME" || echo "[!] netns 정리 실패: $NETNS_NAME (계속 진행)"
     fi
 
+    # 컨테이너가 시작됐는지 (agent 모드에서 시작 표시 파일이 있으면 true). 세션 폴더가 생기기 전이면 판정하지 않는다
+    local started=false
+    if [[ "$MODE" == "agent" && -n "$SESSION_DIR" ]]; then
+        # 표시 파일은 mycontainer_run 이 clone 성공 뒤에 만든다
+        if [[ -n "$START_MARK" && -f "$START_MARK" ]]; then
+            started=true
+        else
+            # 거부(로더 없음, 감시 맵 열기·등록 실패, cgroup 합류 실패 등)이거나 컨테이너를 만들기 전에 끝났다. 세션 폴더는 지우지 않는다
+            echo "[!] 세션 시작 거부: 컨테이너가 시작되지 않음 ($SESSION_ID, 종료 코드 $RC, 시작 표시 없음: $START_MARK)"
+        fi
+    fi
+
     # meta.json 은 있을 때만 갱신한다 (없는데 jq 가 실패하고 tee 만 성공하면 빈 meta.json 이 생긴다)
     if [[ "$MODE" == "agent" && -n "$SESSION_DIR" && -f "$SESSION_DIR/meta.json" ]]; then
         # jq 의 결과를 변수에 먼저 받는다. 파이프로 바로 쓰면 pipefail 이 없어서 jq 가 실패해도 tee 가 빈 임시 파일을 만들고 그것이 meta.json 을 덮어쓴다
         # if 조건 안이라 jq 가 실패해도 set -e 로 끝나지 않는다. jq 의 오류 메시지는 숨기지 않고 그대로 화면에 낸다
         local new_meta
         # meta.json 은 0600 root 소유라 sudo 로 읽는다
-        if new_meta="$(sudo jq --arg end "$(date -Is)" --argjson rc "$RC" \
-               '. + {ended_at:$end, exit_code:$rc}' "$SESSION_DIR/meta.json")" && [[ -n "$new_meta" ]]; then
+        if new_meta="$(sudo jq --arg end "$(date -Is)" --argjson rc "$RC" --argjson started "$started" \
+               '. + {ended_at:$end, exit_code:$rc, started:$started}' "$SESSION_DIR/meta.json")" && [[ -n "$new_meta" ]]; then
             # 새 내용을 임시 파일에 쓰고, 쓰기가 성공했을 때만 바꿔 넣는다 (파이프 대신 here-string)
             # 0600: mv 로 바꿔 넣으면 임시 파일의 권한이 meta.json 의 권한이 되므로, 쓰기 전에 임시 파일을 만들고 600 으로 맞춘다
             # (이미 있는 임시 파일도 chmod 로 맞춰진다. touch 나 chmod 가 실패하면 아래 "쓰기" 실패 분기로 가서 meta.json 은 그대로 둔다)
@@ -255,6 +269,8 @@ if [[ "$MODE" == "agent" ]]; then
     SESSIONS_ROOT="${MYC_SESSIONS_ROOT:-/var/lib/mycontainer/sessions}"
     SESSION_DIR="$SESSIONS_ROOT/$SESSION_ID"
     sudo mkdir -p "$SESSION_DIR"
+    # 시작 표시 파일 경로 (세션 ID 가 시각과 PID 라 세션 폴더가 매번 새로 생기므로, 이전 실행의 표시가 남아 있지 않다고 본다)
+    START_MARK="$SESSION_DIR/started"
 
     # cgroup id → 세션 대응표. 로더가 첫 이벤트를 받을 때 readlink 로 읽는다.
     sudo mkdir -p "$SESSIONS_ROOT/by-cgroup"
@@ -324,7 +340,8 @@ sudo mkdir -p "$(dirname "$CONTAINER_DIR")"
 set +e
 # 여기부터 감시 맵에 이 세션 항목이 있을 수 있다 (정리 단계가 맵 삭제를 한다)
 MC_STARTED=1
-./mycontainer_run "$ROOTFS_PATH" "$CONTAINER_DIR" "$CGROUP_PATH" "$NETNS_NAME" "${CMD[@]}"
+# MYC_START_MARK: clone 이 성공하면 mycontainer_run 이 이 경로에 시작 표시 파일을 만든다 (run 모드에서는 빈 값이라 만들지 않는다)
+MYC_START_MARK="$START_MARK" ./mycontainer_run "$ROOTFS_PATH" "$CONTAINER_DIR" "$CGROUP_PATH" "$NETNS_NAME" "${CMD[@]}"
 RC=$?
 set -e
 

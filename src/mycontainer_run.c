@@ -537,6 +537,28 @@ int main(int argc, char *argv[]) {
                          &cargs);
     if (child_pid == -1) die("clone 실패");
 
+    /*
+     * ---------- 시작 표시 (agent-run 의 시작 거부 구분용) ----------
+     * clone 이 성공했다면 로더 생존 확인과 감시 등록을 지나 컨테이너 프로세스가 생긴 것이다.
+     * run_container.sh 가 MYC_START_MARK 로 넘긴 경로(세션 폴더의 started)에 표시 파일을 만든다.
+     * 이 앞에서 끝나는 경로는 시작 표시를 만들지 않는다. 그 경로들의 종료 코드(대부분 1)는 명령의 1 과 구별되지 않으므로, 파일이 있는지로 구별한다.
+     * 파일이 없으면 run_container.sh 가 meta.json 에 started:false 를 쓴다.
+     * 만들지 못하면 경고만 내고 세션은 계속한다 (이미 감시 아래에서 시작했으므로 멈추지 않는다. 그 세션은 started:false 로 기록된다).
+     * 환경변수가 없으면(run 모드, 직접 실행) 아무것도 하지 않는다.
+     */
+    const char *start_mark = getenv("MYC_START_MARK");
+    if (start_mark && start_mark[0] != '\0') {
+        int mark_fd = open(start_mark, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        if (mark_fd < 0) {
+            fprintf(stderr, "[!] 시작 표시 파일 생성 실패: %s: %s (계속 진행, meta.json 에는 started:false 로 남음)\n",
+                    start_mark, strerror(errno));
+        } else {
+            /* 내용은 참고용이다. 있는지만 본다 */
+            dprintf(mark_fd, "PID=%d\n", child_pid);
+            close(mark_fd);
+        }
+    }
+
     /* 부모는 파이프의 쓰기 끝만 쓰고, 읽기 끝은 자식 것이므로 부모는 안 씀 */
     close(pipefd[0]);
 

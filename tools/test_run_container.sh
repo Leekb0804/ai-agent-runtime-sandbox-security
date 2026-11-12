@@ -23,6 +23,8 @@
 # - 정리 단계의 sudo jq 는 이 모래상자에서 root 가 아니고 파일도 사용자 소유라서, 0600 root 소유 파일을 읽을 수 있는지 시험하지 못한다.
 # - 모래상자에서는 CGROUP_PATH 가 /sys/fs/cgroup/... 그대로라 [[ -d "$CGROUP_PATH" ]] 가 거짓이다. 그래서 cgroup rmdir 재시도와
 #   TERM/INT 의 cgroup.kill 은 실행되지 않는다. 가짜 ip 가 br0 이 있다고 답하므로 iptables, sysctl 도 불리지 않는다.
+# - 시작 표시 파일(started)은 가짜 mycontainer_run 이 만든다. 진짜 mycontainer_run.c 가 clone 성공 뒤에 만드는지, 거부 경로에서
+#   만들지 않는지는 VM 에서만 확인된다 (거부는 MOCK_MC_REJECT=1 로 흉내 낸다).
 #
 # ===== 종료 코드 =====
 #   0 : 전부 통과 (ALL PASSED)
@@ -195,8 +197,8 @@ end_jq() {
 
 # 시작 직후 meta.json 의 키 (정렬, jq keys 의 모양)
 START_KEYS='["cgroup_id","cgroup_path","command","limits","rootfs","schema_version","session_id","started_at"]'
-# 정리 뒤 meta.json 의 키 (ended_at, exit_code 가 더해진다)
-END_KEYS='["cgroup_id","cgroup_path","command","ended_at","exit_code","limits","rootfs","schema_version","session_id","started_at"]'
+# 정리 뒤 meta.json 의 키 (ended_at, exit_code, started 가 더해진다)
+END_KEYS='["cgroup_id","cgroup_path","command","ended_at","exit_code","limits","rootfs","schema_version","session_id","started","started_at"]'
 
 echo "[rc=0 실행: 시작 직후와 정리 뒤의 meta.json]"
 # 가짜 mycontainer_run 이 0 으로 끝나는 실행
@@ -211,10 +213,14 @@ check_eq "rc=0: 시작 직후 meta.json 권한 600" 600 "$(snap_value start_perm
 check_eq "rc=0: 시작 직후 meta.json 키 8개" "$START_KEYS" "$(snap_value start_keys)"
 # 정리 뒤 권한 (임시 파일을 600 으로 맞춘 뒤 mv 로 바꿔 넣는다)
 check_eq "rc=0: 정리 뒤 meta.json 권한 600" 600 "$(end_perm)"
-# 정리 뒤 키 10개
-check_eq "rc=0: 정리 뒤 meta.json 키 10개 (ended_at, exit_code 추가)" "$END_KEYS" "$(end_jq 'keys')"
+# 정리 뒤 키 11개
+check_eq "rc=0: 정리 뒤 meta.json 키 11개 (ended_at, exit_code, started 추가)" "$END_KEYS" "$(end_jq 'keys')"
 # exit_code 는 숫자 0
 check_eq "rc=0: exit_code 0" 0 "$(end_jq '.exit_code')"
+# 가짜 mycontainer_run 이 받은 시작 표시 경로는 그 세션 폴더의 started 다
+check_eq "rc=0: MYC_START_MARK 가 세션 폴더의 started" "${META%/meta.json}/started" "$(snap_value start_mark_env)"
+# 시작 표시가 있으므로 started 는 불리언 true
+check_eq "rc=0: started true" true "$(end_jq '.started')"
 # 임시 파일이 남지 않는다 (mv 로 바꿔 넣었다)
 check_eq "rc=0: meta.json.tmp 가 남지 않음" 없음 "$([[ -e "$META.tmp" ]] && echo 있음 || echo 없음)"
 # 경고 줄([!])이 없다 (가짜 bpftool 의 lookup 이 254 라 감시 맵 정리도 조용하다)
@@ -243,6 +249,24 @@ check_eq "rc=3: run_container.sh 종료 코드 3" 3 "$RC_GOT"
 check_eq "rc=3: exit_code 3" 3 "$(end_jq '.exit_code')"
 # 정리 뒤 권한
 check_eq "rc=3: 정리 뒤 meta.json 권한 600" 600 "$(end_perm)"
+# 명령이 0 이 아닌 값으로 끝나도 시작은 했다
+check_eq "rc=3: started true" true "$(end_jq '.started')"
+
+echo "[시작 거부 (MOCK_MC_REJECT=1): 시작 표시가 없음]"
+# 가짜 mycontainer_run 이 표시 파일을 만들지 않고 1 로 끝나는 실행 (진짜의 거부 경로는 모두 exit(1))
+run_sb reject 1 MOCK_MC_REJECT=1
+# run_container.sh 는 그대로 1 로 끝난다
+check_eq "거부: run_container.sh 종료 코드 1" 1 "$RC_GOT"
+# exit_code 는 숫자 1 (명령이 1 로 끝난 것과 같은 값)
+check_eq "거부: exit_code 1" 1 "$(end_jq '.exit_code')"
+# 종료 코드로는 구별되지 않는 것을 started 가 구별한다
+check_eq "거부: started false" false "$(end_jq '.started')"
+# 정리 뒤 권한
+check_eq "거부: 정리 뒤 meta.json 권한 600" 600 "$(end_perm)"
+# 경고 문구
+expect_text "거부: \"세션 시작 거부\" 문구" "[!] 세션 시작 거부: 컨테이너가 시작되지 않음"
+# 세션 시작 줄은 그대로 한 번 나온다 (러너가 세션 ID 를 뽑는 줄이라 바꾸지 않았다)
+check_eq "거부: \"[*] 세션 시작:\" 줄이 한 번" 1 "$(grep -cF '[*] 세션 시작:' "$OUTF")"
 
 echo "[시작 쓰기의 jq 실패 (MOCK_JQ_FAIL_START=1)]"
 # 시작 쓰기의 jq -n 만 실패하는 실행

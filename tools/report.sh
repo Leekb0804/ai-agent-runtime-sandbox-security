@@ -222,6 +222,10 @@ else
       "- 종료 시각: \(.ended_at | s)",
       # exit_code 가 없으면 종료 정보 없음
       (if has("exit_code") and .exit_code != null then "- exit_code: \(.exit_code)" else "- 종료 정보 없음 (exit_code 키가 없음)" end),
+      # started: 정리 단계가 시작 표시 파일을 보고 쓴다. false 면 컨테이너가 시작되지 않았다. 키가 없으면(w5d3 이전 세션, 정리 단계를 못 탐) 기록 없음
+      (if .started == true then "- 컨테이너 시작: 됨"
+       elif .started == false then "- 컨테이너 시작: 안 됨 (시작 거부이거나 컨테이너를 만들기 전에 끝남. 이 세션의 판정과 이벤트가 없는 것은 감시 결과가 아니다)"
+       else "- 컨테이너 시작: (기록 없음)" end),
       # rootfs 그대로
       "- rootfs: \(.rootfs | s)",
       # command: 없으면 (없음), 있으면 원문 앞 80자를 자른 뒤 개행을 \n 글자로 바꾼다 (한 줄로 보이게)

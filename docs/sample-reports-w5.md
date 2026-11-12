@@ -1,6 +1,6 @@
 # 세션 리포트 샘플 (tools/report.sh)
 
-이 문서는 tools/report.sh 가 w5d1 VM 의 실제 세션 로그에서 만든 출력을 줄 그대로 옮긴 것이다. 도구의 사용법은 tools/report.sh 머리 주석, 로그 형식은 docs/log-schema-draft.md 를 본다.
+이 문서는 tools/report.sh 가 w5d1 VM 의 실제 세션 로그에서 만든 출력을 줄 그대로 옮긴 것이다. 단 '컨테이너 시작' 줄 하나는 w5d3 의 report.sh 가 내는 줄이라 '만든 시각'(w5d1)과 시점이 다르고, fixture 에 started 가 없어 모두 '(기록 없음)' 이다. '됨' 과 '안 됨' 문구는 이 문서의 샘플에 없고 tools/test_report.sh 에서 확인한다. 도구의 사용법은 tools/report.sh 머리 주석, 로그 형식은 docs/log-schema-draft.md 를 본다.
 
 - 시나리오 이름은 세션 폴더에서 알 수 없어 --scenario 로 직접 줬다.
 - 출력의 '만든 시각' 은 이 샘플을 만든 시각이다 (도구를 실행할 때마다 달라진다).
@@ -27,6 +27,7 @@ tools/report.sh tools/fixtures/real_w5_n03 --scenario n03_pip_install_local
 - 시작 시각: 2026-11-04T01:55:39+09:00
 - 종료 시각: 2026-11-04T01:55:40+09:00
 - exit_code: 0
+- 컨테이너 시작: (기록 없음)
 - rootfs: /home/dev/practice/mycontainer/dev_rootfs
 - command: /bin/sh -c # n03_pip_install_local: 컨테이너 안에서 실행할 스크립트 (러너가 /bin/sh -c 로 실행한다)\n#\n (길어서 줄임)
 - 주의: exit_code 의 값만으로는 종료 원인을 가릴 수 없다. 137 이 로더의 종료 때문인지는 아래 판정 항목의 kill/sent 로만 가린다.
@@ -80,6 +81,7 @@ tools/report.sh ~/w5_samples2/run/sessions/20261104-015541-252047 --scenario n05
 - 시작 시각: 2026-11-04T01:55:41+09:00
 - 종료 시각: 2026-11-04T01:55:41+09:00
 - exit_code: 0
+- 컨테이너 시작: (기록 없음)
 - rootfs: /home/dev/practice/mycontainer/dev_rootfs
 - command: /bin/sh -c # n05_script_exec: 컨테이너 안에서 실행할 스크립트 (러너가 /bin/sh -c 로 실행한다)\n#\n# 정상 작 (길어서 줄임)
 - 주의: exit_code 의 값만으로는 종료 원인을 가릴 수 없다. 137 이 로더의 종료 때문인지는 아래 판정 항목의 kill/sent 로만 가린다.
@@ -126,6 +128,7 @@ tools/report.sh tools/fixtures/real_w5_n06 --scenario n06_host_runs_output --loa
 - 시작 시각: 2026-11-04T01:55:41+09:00
 - 종료 시각: 2026-11-04T01:55:41+09:00
 - exit_code: 0
+- 컨테이너 시작: (기록 없음)
 - rootfs: /home/dev/practice/mycontainer/dev_rootfs
 - command: /bin/sh -c # n06_host_runs_output: 컨테이너 안에서 실행할 스크립트 (러너가 /bin/sh -c 로 실행한다)\n#\n# (길어서 줄임)
 - 주의: exit_code 의 값만으로는 종료 원인을 가릴 수 없다. 137 이 로더의 종료 때문인지는 아래 판정 항목의 kill/sent 로만 가린다.
@@ -173,6 +176,7 @@ tools/report.sh tools/fixtures/real_w5_s00 --scenario s00_benign
 - 시작 시각: 2026-11-04T01:44:46+09:00
 - 종료 시각: 2026-11-04T01:44:46+09:00
 - exit_code: 0
+- 컨테이너 시작: (기록 없음)
 - rootfs: /home/dev/practice/mycontainer/busybox_rootfs
 - command: /bin/sh -c # s00_benign: 컨테이너 안에서 실행할 스크립트 (러너가 /bin/sh -c 로 실행한다)\n#\n# 무해한 명령 하나 (길어서 줄임)
 - 주의: exit_code 의 값만으로는 종료 원인을 가릴 수 없다. 137 이 로더의 종료 때문인지는 아래 판정 항목의 kill/sent 로만 가린다.

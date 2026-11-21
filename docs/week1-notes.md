@@ -159,7 +159,7 @@
   - 해결: (미해결)
 - [x] **meta.json 필드가 확정되지 않음 (rootfs, limits, cgroup_path 등)**
   - 이유: 리포트와 재현에 필요한 세션 실행 조건이 아직 기록되지 않는다.
-  - 비고: w5d1: schema_version, rootfs, cgroup_path, limits(memory, cpu, pids) 를 더해 키가 10개가 되었다. 로더 모드(kill/observe)와 켠 탐지기 목록은 meta.json 에 없고 로더 stderr 의 ready 줄에만 있다. command 는 인자를 공백으로 합쳐 인자 경계가 사라지고, 러너 세션은 run.sh 전체(주석 포함)가 들어가 길다. 키 목록과 의미는 docs/log-schema-draft.md 의 "meta.json (세션 정보)" 절에 있다.
+  - 비고: w5d1: schema_version, rootfs, cgroup_path, limits(memory, cpu, pids) 를 더해 키가 10개가 되었다. 로더 모드(kill/observe)와 켠 탐지기 목록은 meta.json 에 없고 로더 stderr 의 ready 줄에만 있다. command 는 인자를 공백으로 합쳐 인자 경계가 사라지고, 러너 세션은 run.sh 전체(주석 포함)가 들어가 길다. 키 목록과 의미는 docs/log-schema.md 의 "meta.json (세션 정보)" 절에 있다.
   - 시점: w5
   - 해결: "w5d1: meta.json 에 형식 버전·rootfs·cgroup 경로·제한값 추가, jq 실패 보호, 권한 0600"
   - 확인: VM 에서 s00 한 번 실행해 키 10개와 권한 600(root)을 확인했고 정리 단계 뒤에도 600 이 유지됐다 [VM확인, 한 번]. 모래상자에서 시작 jq 실패 시 meta.json 없이 진행됨을 확인했다 [모래상자 확인]

@@ -3,7 +3,7 @@
 1주차에 만든 "관측 → 판정 → 기록" 배관의 구조와, 2주차 이후로 넘기는 결정을 한 장에 모은다.
 이 문서는 코드와 어긋나면 코드가 맞다. 어긋난 곳을 발견하면 이 문서를 고친다.
 
-- 로그 레코드의 필드 정의: [`log-schema-draft.md`](log-schema-draft.md)
+- 로그 레코드의 필드 정의: [`log-schema.md`](log-schema.md)
 - 알려진 한계와 해결 시점: [`week1-notes.md`](week1-notes.md)
 
 ## 1. 한 줄 요약

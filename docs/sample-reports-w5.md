@@ -1,6 +1,6 @@
 # 세션 리포트 샘플 (tools/report.sh)
 
-이 문서는 tools/report.sh 가 w5d1 VM 의 실제 세션 로그에서 만든 출력을 줄 그대로 옮긴 것이다. 단 '컨테이너 시작' 줄 하나는 w5d3 의 report.sh 가 내는 줄이라 '만든 시각'(w5d1)과 시점이 다르고, fixture 에 started 가 없어 모두 '(기록 없음)' 이다. '됨' 과 '안 됨' 문구는 이 문서의 샘플에 없고 tools/test_report.sh 에서 확인한다. 도구의 사용법은 tools/report.sh 머리 주석, 로그 형식은 docs/log-schema-draft.md 를 본다.
+이 문서는 tools/report.sh 가 w5d1 VM 의 실제 세션 로그에서 만든 출력을 줄 그대로 옮긴 것이다. 단 '컨테이너 시작' 줄 하나는 w5d3 의 report.sh 가 내는 줄이라 '만든 시각'(w5d1)과 시점이 다르고, fixture 에 started 가 없어 모두 '(기록 없음)' 이다. '됨' 과 '안 됨' 문구는 이 문서의 샘플에 없고 tools/test_report.sh 에서 확인한다. 도구의 사용법은 tools/report.sh 머리 주석, 로그 형식은 docs/log-schema.md 를 본다.
 
 - 시나리오 이름은 세션 폴더에서 알 수 없어 --scenario 로 직접 줬다.
 - 출력의 '만든 시각' 은 이 샘플을 만든 시각이다 (도구를 실행할 때마다 달라진다).
@@ -198,7 +198,7 @@ tools/report.sh tools/fixtures/real_w5_s00 --scenario s00_benign
 
 - BLOCK 은 사후 종료 요청이고 실행을 막지 못한다 (출력의 "BLOCK (사후 종료 요청, 실행을 막지 못함)").
 - "같음/다름" 은 TAG_HIT 판정에서 파일을 쓴 세션의 cgroup(`event.cgroup_id`)과 실행한 쪽의 cgroup(`event.exec_cgroup_id`)을 비교한 것이다. 같으면 "같은 세션 안 실행", 다르면 "세션 밖 실행" 이다.
-- 종료 대응의 `kill/sent` 는 `cgroup.kill` 에 써서 세션 종료를 요청했다는 뜻이고, `already_gone` 은 종료할 대상이 이미 없었다는 뜻이다 (docs/log-schema-draft.md 의 action 절).
+- 종료 대응의 `kill/sent` 는 `cgroup.kill` 에 써서 세션 종료를 요청했다는 뜻이고, `already_gone` 은 종료할 대상이 이미 없었다는 뜻이다 (docs/log-schema.md 의 action 절).
 - dummy 판정(시험용 dummy_ 탐지기)은 기본으로 제외하고 건수만 보인다. --include-dummy 로 포함한다.
 - 로더 로그를 주면 lost 와 드롭은 이 세션만의 값이 아니라 로더 실행 전체의 합계다.
 - 이 리포트는 만든 시점의 스냅샷이고, 탐지기가 낸 판정만 보여 준다.

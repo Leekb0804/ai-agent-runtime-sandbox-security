@@ -2,7 +2,7 @@
  * test_dummy_detectors.c
  *
  * 시험용 더미 탐지기 dummy_block, dummy_suspect 의 단위 테스트. 커널 없이 합성 EXEC 이벤트를 디스패처에 넣고
- * 판정의 수준, 탐지기 이름, 이유를 검증한다. 이유는 docs/log-schema-draft.md 의 "reason 의 계약" 문구와 정확히 같아야 한다.
+ * 판정의 수준, 탐지기 이름, 이유를 검증한다. 이유는 docs/log-schema.md 의 "reason 의 계약" 문구와 정확히 같아야 한다.
  *
  * 다른 탐지기 시험과 달리 탐지기 파일 두 개를 함께 링크한다. 둘 다 EXEC 만 구독하므로 한 EXEC 에 판정이 둘 나올 수 있다.
  * 그래서 sink 는 마지막 판정 하나가 아니라 받은 판정을 모두 담고, 검사는 탐지기 이름으로 판정을 찾는다

@@ -46,7 +46,7 @@ sudo ../tools/report.sh /var/lib/mycontainer/sessions/<세션 ID>   # 세션 리
 보호 기능이 꺼지는 모드이므로 평소 실행에 쓰지 않습니다. 러너(`run_scenarios.sh`)도 이 옵션을 쓰지 않습니다.
 
 세션 로그는 `/var/lib/mycontainer/sessions/<세션ID>/` 의 `events.jsonl`, `verdicts.jsonl` 에 남습니다.
-로그 형식은 [docs/log-schema-draft.md](docs/log-schema-draft.md) 를 참고하세요.
+로그 형식은 [docs/log-schema.md](docs/log-schema.md) 를 참고하세요.
 
 ## 테스트
 
@@ -70,7 +70,7 @@ sudo ./run_scenarios.sh          # 진짜 로더와 컨테이너로 전체 시�
 - [설계 메모 2주차](docs/design-memo-w2.md)
 - [위협 모델](docs/threat-model-w2.md): 막는 것과 보는 것, "차단"의 두 가지 의미
 - [알려진 한계](docs/week1-notes.md): 해결할 것과 수용한 한계
-- [로그 스키마 초안](docs/log-schema-draft.md): events/verdicts/meta.json 형식
+- [로그 스키마 초안](docs/log-schema.md): events/verdicts/meta.json 형식
 - [오탐 집계표](docs/false-positive-table.md): 정상 시나리오의 SUSPECT/BLOCK 수
 - [exec_identity 시나리오 정의서](docs/exec-identity-scenarios-w4.md)
 - [세션 리포트 샘플](docs/sample-reports-w5.md): tools/report.sh 의 실제 출력

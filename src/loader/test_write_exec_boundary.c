@@ -52,7 +52,7 @@ static void reset_sink(void)
 }
 
 /*
- * reason 의 계약 문구 (docs/log-schema-draft.md 의 "reason 의 계약"). 탐지기 소스에서 가져오지 않고 여기 따로 적는다.
+ * reason 의 계약 문구 (docs/log-schema.md 의 "reason 의 계약"). 탐지기 소스에서 가져오지 않고 여기 따로 적는다.
  * 탐지기의 문구가 바뀌면 이 시험이 FAIL 해서 계약을 함께 고치게 한다.
  */
 #define PREFIX_BLOCK   "세션 밖 실행, 쓴 지 "

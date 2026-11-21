@@ -22,7 +22,7 @@
 # - 세 파일은 jq 로 한 번에 읽는다 (jq -s). 한 줄이라도 깨지면 그 파일 전체를 읽지 못한 것으로 보고 2 로 끝낸다
 #   (tools/judge.sh 와 같은 방식. 줄 단위로 건너뛰면 빠진 판정이 "의심 없음" 처럼 보일 수 있어서).
 # - schema_version 1 은 지금 형식, 0 은 4주차까지의 옛 형식이다. 0 은 경고를 붙여 읽고, 그 밖의 값은 2 로 끝낸다.
-# - action 줄은 바로 앞 줄이 reason 이 같은 BLOCK verdict 일 때만 그 판정에 붙인다 (docs/log-schema-draft.md 의
+# - action 줄은 바로 앞 줄이 reason 이 같은 BLOCK verdict 일 때만 그 판정에 붙인다 (docs/log-schema.md 의
 #   "verdict 와의 연결"). 맞지 않으면 "연결 불명" 으로 따로 보여 준다.
 # - EXEC 와 EXEC_PATH 는 1:1 이 아니어서 짝짓지 않고 개수만 보여 준다.
 

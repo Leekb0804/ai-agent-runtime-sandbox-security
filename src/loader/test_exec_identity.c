@@ -79,7 +79,7 @@ static void run(const struct evt_exec_path *e, size_t len)
 }
 
 /*
- * reason 의 계약 문구 (docs/log-schema-draft.md 의 "reason 의 계약"). 탐지기 소스에서 가져오지 않고 여기 따로 적는다.
+ * reason 의 계약 문구 (docs/log-schema.md 의 "reason 의 계약"). 탐지기 소스에서 가져오지 않고 여기 따로 적는다.
  * is_suspect 는 규칙 표시가 이유 어디에 있어도 맞으므로, 맨 앞부터의 문구는 starts_with 로 따로 본다.
  */
 #define PREFIX_M "[M] 메모리에서 실행(memfd): 요청 "

@@ -94,7 +94,7 @@ expect_out() {
 # events.jsonl 은 그대로 복사하고(탐지기와 무관한 관측), verdicts.jsonl 에서 다음 줄만 지운다:
 #   - 그 탐지기의 verdict 줄 전부
 #   - 그 탐지기 BLOCK verdict 의 reason 과 reason 이 같은 action 줄
-# action 줄에는 detector 필드가 없어서 reason 으로 짝짓는다. docs/log-schema-draft.md 의 action 절에 따르면
+# action 줄에는 detector 필드가 없어서 reason 으로 짝짓는다. docs/log-schema.md 의 action 절에 따르면
 # action 줄은 세션의 첫 BLOCK verdict 줄 바로 다음 줄에 있고 reason 이 그 verdict 의 reason 과 같다.
 # 복사나 jq 가 실패하면 FAIL 줄을 내고 실패 수를 늘린다. 그러지 않으면 비거나 잘린 verdicts.jsonl 때문에
 # 뒤의 "실패해야 한다" 검사가 거짓으로 통과할 수 있다.

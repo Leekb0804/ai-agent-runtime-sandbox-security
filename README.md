@@ -56,6 +56,93 @@ sudo ../tools/report.sh /var/lib/mycontainer/sessions/<세션 ID>   # 세션 리
 세션 로그는 `/var/lib/mycontainer/sessions/<세션ID>/` 의 `events.jsonl`, `verdicts.jsonl` 에 남습니다.
 로그 형식은 [docs/log-schema.md](docs/log-schema.md) 를 참고하세요.
 
+## 구조
+
+세션 실행, 커널(eBPF), 로더, 도구 사이에서 무엇이 오가는지를 두 장으로 나눠 그렸습니다.
+
+### 1장: 세션 실행과 커널
+
+```mermaid
+flowchart TB
+    subgraph RUN["세션 실행"]
+        RC["run_container.sh<br/>netns·veth·br0<br/>세션 폴더"]
+        MR["mycontainer_run<br/>cgroup 합류<br/>맵 등록, clone"]
+        AG["에이전트 프로세스<br/>사용자 네임스페이스<br/>uid 0, overlay rootfs"]
+    end
+    HOST["세션 밖 프로세스<br/>(호스트)"]
+
+    subgraph KERN["커널(eBPF)"]
+        P1["on_execve<br/>tracepoint sys_enter_execve"]
+        P2["on_file_open<br/>fentry security_file_open"]
+        P3["on_bprm_check<br/>fentry security_bprm_check"]
+        P4["on_exec_path<br/>fentry security_bprm_check"]
+        MC[("session_cgroups<br/>해시, pin")]
+        MW[("write_tags<br/>LRU 해시")]
+        RB[("events<br/>링버퍼")]
+    end
+
+    RC -->|실행| MR
+    MR -->|cgroup id 등록| MC
+    MR -->|clone, execvp| AG
+    AG -->|execve| P1
+    AG -->|쓰기 open| P2
+    AG -->|exec| P4
+    AG -->|exec| P3
+    HOST -->|exec| P3
+    P1 -->|cgroup 조회| MC
+    P2 -->|cgroup 조회| MC
+    P4 -->|cgroup 조회| MC
+    P2 -->|dev, ino 기록| MW
+    P3 -->|dev, ino 조회| MW
+    P1 -->|EXEC| RB
+    P3 -->|TAG_HIT| RB
+    P4 -->|EXEC_PATH| RB
+```
+
+### 2장: 로더, 기록, 도구
+
+```mermaid
+flowchart TB
+    RB[("events 링버퍼<br/>1장에서")]
+    AGX["세션 cgroup<br/>1장의 에이전트"]
+    MCX[("session_cgroups<br/>1장의 맵")]
+
+    subgraph USER["로더(userspace)"]
+        HE["로더 본체<br/>적재·부착, 잠금<br/>링버퍼 poll<br/>handle_event"]
+        DP["디스패처와 탐지기<br/>write_exec_boundary, exec_identity, dummy"]
+        VH["판정 처리<br/>handle_verdict"]
+        KS["세션 종료<br/>kill_session"]
+    end
+
+    subgraph TOOLS["도구와 기록"]
+        RC["run_container.sh"]
+        SD[("세션 폴더<br/>events.jsonl, verdicts.jsonl, meta.json")]
+        RP["report.sh"]
+        SC["run_scenarios.sh<br/>judge, leak_check"]
+    end
+
+    RB -->|이벤트| HE
+    HE -->|events.jsonl| SD
+    HE -->|dispatch_event| DP
+    DP -->|판정| VH
+    VH -->|verdicts.jsonl| SD
+    VH -->|BLOCK| KS
+    KS -->|cgroup.kill| AGX
+    KS -->|항목 삭제| MCX
+    KS -->|action 기록| SD
+    RC -->|폴더, meta.json| SD
+    SD -->|읽기| RP
+    SC -->|로더 실행| HE
+    SC -->|agent-run| RC
+    SD -->|expect.json 비교| SC
+```
+
+- 커널의 네 프로그램은 로더가 적재·부착하며, 로더가 떠 있어야 세션이 시작됩니다.
+- 커널에서 로더로 가는 데이터는 링버퍼 `events` 하나로만 지나갑니다. 2장 맨 위의 세 노드는 1장의 노드를 가리킵니다.
+- 네모는 프로그램, 원통은 맵과 파일이고, 화살표 라벨은 흐르는 것입니다.
+
+노드와 화살표마다의 근거(파일:줄)는 [docs/architecture.md](docs/architecture.md) 에 있습니다.
+
 ## 테스트
 
 ```bash
@@ -84,6 +171,7 @@ sudo ./run_scenarios.sh          # 진짜 로더와 컨테이너로 전체 시�
 - [exec_identity 시나리오 정의서](docs/exec-identity-scenarios-w4.md)
 - [세션 리포트 샘플](docs/sample-reports-w5.md): tools/report.sh 의 실제 출력
 - [회귀 실행 기록 5주차](docs/regression-w5.md): `--repeat 10` 으로 시나리오 15개 x 10회, 150/150 통과, 약 298초
+- [구조도](docs/architecture.md): 세션 실행, 커널(eBPF), 로더, 도구의 데이터 흐름과 근거
 
 ## 한계
 

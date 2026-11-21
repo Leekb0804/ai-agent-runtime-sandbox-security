@@ -32,6 +32,10 @@ LOG_SRCS="loader/dispatcher.c loader/json_escape.c loader/jsonl.c loader/session
 KILL_SRCS="loader/kill.c loader/kill_cgroup.c"
 COMMON_SRCS="$LOG_SRCS $KILL_SRCS loader/verdict_handler.c"
 
+# 준비: bpf/vmlinux.h 가 없으면 현재 커널의 BTF 로 만든다 (있으면 출력 없이 넘어감. 단계 번호는 매기지 않는다)
+# vmlinux.h 는 생성물이라 저장소에 없어서, 깨끗한 clone 에서는 [1/13] 이 'vmlinux.h' file not found 로 실패한다
+./ensure_vmlinux.sh
+
 echo "[1/13] eBPF 오브젝트 (clang)"
 # -g                       : 디버그 정보 포함 (BTF 생성에 필요)
 # -O2                      : 최적화. eBPF 는 최적화 없이는 verifier 를 통과하지 못하는 경우가 많다

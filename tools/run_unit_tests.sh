@@ -39,6 +39,7 @@ TESTS=(
     tools/test_live_latency.sh
     tools/test_run_container.sh
     tools/test_runner.sh
+    tools/test_ensure_vmlinux.sh
 )
 
 # 사용법을 표준 오류에 내고 사용 오류(2)로 끝낸다
